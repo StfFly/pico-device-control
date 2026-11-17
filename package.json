@@ -1,0 +1,15 @@
+{
+  "name": "pico-manager-desktop",
+  "version": "2.0.0",
+  "description": "PICO VR 场馆运营与多设备统一管理控制中心 (Tauri v2 + Rust)",
+  "private": true,
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "^2.2.0",
+    "@tauri-apps/cli": "^2.2.0"
+  }
+}

@@ -1,0 +1,53 @@
+﻿{
+  "WebPort": 8999,
+  "UdpPort": 8998,
+  "EnableUdpService": true,
+  "AutoLockOnFind": true,
+  "EnableSimulatorFallback": false,
+  "Projects": [
+    {
+      "Id": "proj-1",
+      "Name": "胡闹厨房",
+      "Type": "vr_app",
+      "PackageName": "com.goldon.hunaochufang",
+      "DurationMinutes": 15,
+      "Icon": "🎮",
+      "ExtraJson": ""
+    },
+    {
+      "Id": "proj-2",
+      "Name": "深海探秘大冒险",
+      "Type": "vr_app",
+      "PackageName": "com.vr.ocean",
+      "DurationMinutes": 12,
+      "Icon": "🐋",
+      "ExtraJson": ""
+    },
+    {
+      "Id": "proj-3",
+      "Name": "重返恐龙纪元",
+      "Type": "vr_app",
+      "PackageName": "com.vr.dino",
+      "DurationMinutes": 10,
+      "Icon": "🦖",
+      "ExtraJson": ""
+    },
+    {
+      "Id": "proj-4",
+      "Name": "PICO 官方全景影院",
+      "Type": "vr_app",
+      "PackageName": "com.pico.vrplayer",
+      "DurationMinutes": 20,
+      "Icon": "🎬",
+      "ExtraJson": ""
+    }
+  ],
+  "HeadsetAliases": {
+    "PA9410MGJ9090528G": "022"
+  },
+  "DeviceDefaultProjects": {
+    "022": "com.goldon.hunaochufang",
+    "01": "com.vr.ocean",
+    "02": "com.vr.dino"
+  }
+}

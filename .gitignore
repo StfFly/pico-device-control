@@ -1,0 +1,28 @@
+# Node.js dependencies
+node_modules/
+
+# Rust / Tauri build output
+src-tauri/target/
+
+# .NET build and publish output
+**/bin/
+**/obj/
+**/publish/
+
+# IDE and local tooling
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Logs and temporary files
+*.log
+*.tmp
+*.pdb
+
+# Generated deployment artifacts
+/PicoManager_v1.0_完整部署包/
+/PicoManager_v1.0_完整部署包.zip
+/PicoVR_Server_Deploy/
+/PicoVR_全息控制中心.exe

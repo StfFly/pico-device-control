@@ -1,0 +1,62 @@
+{
+  "adbPath": "adb",
+  "webPort": 9005,
+  "defaultConcurrency": 3,
+  "defaultRemoteConfigPath": "/sdcard/Android/data/com.goldon.hunaochufang/files/config.json",
+  "devices": [
+    {
+      "deviceNo": "022",
+      "alias": "022号机",
+      "ip": "192.168.1.122",
+      "port": 5555,
+      "sn": "PA9410MGJ9090528G",
+      "isConnected": false,
+      "battery": -1,
+      "androidVersion": "",
+      "model": "PICO 4 Enterprise",
+      "lastChecked": null,
+      "customVars": {
+        "SEAT_ID": "22",
+        "ROLE": "Player",
+        "SERVER_PORT": "8022",
+        "STREAM_URL": "rtsp://192.168.1.100:8554/live22"
+      }
+    },
+    {
+      "deviceNo": "01",
+      "alias": "01号机",
+      "ip": "192.168.1.101",
+      "port": 5555,
+      "sn": "PA9410MGJ9090101G",
+      "isConnected": false,
+      "battery": -1,
+      "androidVersion": "",
+      "model": "PICO 4",
+      "lastChecked": null,
+      "customVars": {
+        "SEAT_ID": "1",
+        "ROLE": "Master",
+        "SERVER_PORT": "8001",
+        "STREAM_URL": "rtsp://192.168.1.100:8554/live1"
+      }
+    },
+    {
+      "deviceNo": "02",
+      "alias": "02号机",
+      "ip": "192.168.1.102",
+      "port": 5555,
+      "sn": "PA9410MGJ9090102G",
+      "isConnected": false,
+      "battery": -1,
+      "androidVersion": "",
+      "model": "PICO 4",
+      "lastChecked": null,
+      "customVars": {
+        "SEAT_ID": "2",
+        "ROLE": "Client",
+        "SERVER_PORT": "8002",
+        "STREAM_URL": "rtsp://192.168.1.100:8554/live2"
+      }
+    }
+  ]
+}
