@@ -61,6 +61,24 @@ namespace PicoManager.Server.Services
             return "adb"; // fallback to system PATH
         }
 
+        /// <summary>
+        /// 过滤危险的 Shell 元字符，保留中文、空格、斜杠、点号、横线、下划线、冒号
+        /// </summary>
+        public static string SanitizeShellArg(string? input)
+        {
+            if (string.IsNullOrEmpty(input)) return string.Empty;
+            char[] dangerous = new[] { ';', '&', '|', '$', '`', '\n', '\r', '"', '\'', '<', '>' };
+            var sb = new StringBuilder(input.Length);
+            foreach (var c in input)
+            {
+                if (!dangerous.Contains(c))
+                {
+                    sb.Append(c);
+                }
+            }
+            return sb.ToString().Trim();
+        }
+
         public async Task<(int ExitCode, string Output, string Error)> RunAdbAsync(
             string arguments,
             int timeoutMs = 15000,
@@ -226,7 +244,8 @@ namespace PicoManager.Server.Services
 
         public async Task<bool> ForceStopAppAsync(string snOrTarget, string packageName)
         {
-            if (string.IsNullOrWhiteSpace(packageName)) return false;
+            string cleanPkg = SanitizeShellArg(packageName);
+            if (string.IsNullOrWhiteSpace(cleanPkg)) return false;
 
             var devs = await GetConnectedDevicesAsync();
             var match = devs.FirstOrDefault(d =>
@@ -234,10 +253,10 @@ namespace PicoManager.Server.Services
                 string.Equals(d.Target, snOrTarget, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(d.Ip, snOrTarget, StringComparison.OrdinalIgnoreCase));
 
-            string target = match?.Target ?? snOrTarget;
+            string target = SanitizeShellArg(match?.Target ?? snOrTarget);
 
             // am force-stop 强制杀掉进程（无弹窗、不留后台、秒级终止释放资源）
-            var res = await RunAdbAsync($"-s {target} shell am force-stop {packageName}", 5000);
+            var res = await RunAdbAsync($"-s {target} shell am force-stop {cleanPkg}", 5000);
             return res.ExitCode == 0;
         }
 
@@ -249,11 +268,15 @@ namespace PicoManager.Server.Services
                 string.Equals(d.Target, snOrTarget, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(d.Ip, snOrTarget, StringComparison.OrdinalIgnoreCase));
 
-            string target = match?.Target ?? snOrTarget;
+            string target = SanitizeShellArg(match?.Target ?? snOrTarget);
 
             foreach (var pkg in packageNames.Where(p => !string.IsNullOrWhiteSpace(p)))
             {
-                await RunAdbAsync($"-s {target} shell am force-stop {pkg.Trim()}", 3000);
+                string cleanPkg = SanitizeShellArg(pkg);
+                if (!string.IsNullOrWhiteSpace(cleanPkg))
+                {
+                    await RunAdbAsync($"-s {target} shell am force-stop {cleanPkg}", 3000);
+                }
             }
         }
 
@@ -365,10 +388,61 @@ namespace PicoManager.Server.Services
                 string.Equals(d.Ip, snOrTarget, StringComparison.OrdinalIgnoreCase));
 
             string target = match?.Target ?? snOrTarget;
-            // 224: KEYCODE_WAKEUP (点亮屏幕并唤醒)
-            // 223: KEYCODE_SLEEP (关闭屏幕并休眠)
-            int keycode = screenOn ? 224 : 223;
-            await RunAdbAsync($"-s {target} shell input keyevent {keycode}", 3000);
+            if (string.IsNullOrWhiteSpace(target)) return;
+
+            if (screenOn)
+            {
+                // 224: KEYCODE_WAKEUP (点亮屏幕并唤醒)
+                await RunAdbAsync($"-s {target} shell input keyevent 224", 3000);
+                // 82: KEYCODE_MENU (自动解锁锁屏保护)
+                await RunAdbAsync($"-s {target} shell input keyevent 82", 2000);
+            }
+            else
+            {
+                // 223: KEYCODE_SLEEP (关闭屏幕并休眠)
+                await RunAdbAsync($"-s {target} shell input keyevent 223", 3000);
+            }
+        }
+
+        private static string ParseAdbInstallError(string output, string error)
+        {
+            string combined = $"{output}\n{error}".Trim();
+
+            if (combined.Contains("INSTALL_FAILED_VERSION_DOWNGRADE", StringComparison.OrdinalIgnoreCase))
+                return "设备已安装更高版本的应用，系统禁止降级覆盖安装（请先在设备上卸载旧版应用后再试）";
+            if (combined.Contains("INSTALL_FAILED_ALREADY_EXISTS", StringComparison.OrdinalIgnoreCase) ||
+                combined.Contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE", StringComparison.OrdinalIgnoreCase))
+                return "签名冲突或应用已存在（设备上的旧版签名与新 APK 不一致，请先卸载旧版后重装）";
+            if (combined.Contains("INSTALL_FAILED_TEST_ONLY", StringComparison.OrdinalIgnoreCase))
+                return "该应用为开发调试测试包（testOnly），需使用 -t 参数安装";
+            if (combined.Contains("INSTALL_FAILED_INSUFFICIENT_STORAGE", StringComparison.OrdinalIgnoreCase))
+                return "头显剩余存储空间不足，安装已终止，请先清理设备存储空间";
+            if (combined.Contains("INSTALL_FAILED_INVALID_APK", StringComparison.OrdinalIgnoreCase))
+                return "APK 安装包解析失败或文件损坏，请重新下载或检查安装包";
+            if (combined.Contains("INSTALL_PARSE_FAILED_NOT_APK", StringComparison.OrdinalIgnoreCase))
+                return "指定的文件并非有效的 Android APK 安装包";
+            if (combined.Contains("INSTALL_FAILED_NO_MATCHING_ABIS", StringComparison.OrdinalIgnoreCase))
+                return "CPU 芯片架构不匹配（该 APK 未包含适配 PICO 头显 ARM64-v8a 的本地库）";
+            if (combined.Contains("INSTALL_FAILED_USER_RESTRICTED", StringComparison.OrdinalIgnoreCase))
+                return "安装被头显安全设置或用户拦截";
+            if (combined.Contains("INSTALL_FAILED_DEXOPT", StringComparison.OrdinalIgnoreCase))
+                return "虚拟机 Dex 优化执行失败（可能系统存储不足或 APK 包含非法字节码）";
+            if (combined.Contains("more than one device", StringComparison.OrdinalIgnoreCase))
+                return "检测到多台 ADB 设备冲突，未能隔离目标设备";
+            if (combined.Contains("device offline", StringComparison.OrdinalIgnoreCase))
+                return "目标设备处于离线状态 (offline)，请确认头戴已开机并连入局域网";
+            if (combined.Contains("device not found", StringComparison.OrdinalIgnoreCase))
+                return "未找到目标设备，请检查无线 ADB 连接状态";
+
+            var match = Regex.Match(combined, @"Failure\s*\[([^\]]+)\]", RegexOptions.IgnoreCase);
+            if (match.Success)
+            {
+                return $"Android系统报错: {match.Groups[1].Value}";
+            }
+
+            var lines = combined.Split('\n').Select(l => l.Trim()).Where(l => !string.IsNullOrEmpty(l)).ToList();
+            var lastMeaningful = lines.LastOrDefault(l => !l.Contains("Performing Streamed Install", StringComparison.OrdinalIgnoreCase));
+            return !string.IsNullOrWhiteSpace(lastMeaningful) ? lastMeaningful : (!string.IsNullOrWhiteSpace(error) ? error : output);
         }
 
         public async Task<(bool Success, string Message)> InstallApkAsync(
@@ -390,27 +464,68 @@ namespace PicoManager.Server.Services
             if (string.IsNullOrWhiteSpace(target))
                 return (false, "未指定有效的目标设备");
 
-            onProgress?.Invoke(20, $"正在向 [{target}] 推流安装 APK...");
+            onProgress?.Invoke(20, $"正在向 [{target}] 安装 APK: {Path.GetFileName(apkPath)}...");
             var sw = Stopwatch.StartNew();
 
-            // 严格带 -s "{target}" 隔离设备执行，杜绝多设备时出现 "more than one device/emulator"
-            // -r: 覆盖安装 -d: 允许降级 -g: 授予所有权限
-            var res = await RunAdbAsync($"-s \"{target}\" install -r -d -g \"{apkPath}\"", 300000, ct);
-            sw.Stop();
-            var sec = Math.Round(sw.Elapsed.TotalSeconds, 1);
+            // 1. 首选推荐参数: -r (覆盖) -d (允许降级) -t (允许测试包) -g (授予所有权限)
+            // 默认超时提升至 600 秒 (10 分钟)，满足数 GB 大型 VR 游戏包安装
+            var res = await RunAdbAsync($"-s \"{target}\" install -r -d -t -g \"{apkPath}\"", 600000, ct);
 
             string combined = $"{res.Output}\n{res.Error}".Trim();
             if (combined.Contains("Success", StringComparison.OrdinalIgnoreCase))
             {
+                sw.Stop();
+                var sec = Math.Round(sw.Elapsed.TotalSeconds, 1);
                 onProgress?.Invoke(100, $"✅ 安装成功 (耗时 {sec}s)");
                 return (true, $"安装成功 (耗时 {sec}s)");
             }
 
-            string errMsg = !string.IsNullOrWhiteSpace(res.Error) ? res.Error : res.Output;
-            if (errMsg.Contains("more than one device", StringComparison.OrdinalIgnoreCase))
+            // 2. 若失败且原因是 -g 参数不被支持，自动降级为 -r -d -t 重试
+            if (combined.Contains("unknown option -g", StringComparison.OrdinalIgnoreCase) ||
+                combined.Contains("Unknown option: -g", StringComparison.OrdinalIgnoreCase))
             {
-                errMsg = $"检测到多设备冲突: 请确认指定了单一目标设备SN/IP (当前目标: {target})";
+                onProgress?.Invoke(40, $"正在以兼容参数重试安装...");
+                res = await RunAdbAsync($"-s \"{target}\" install -r -d -t \"{apkPath}\"", 600000, ct);
+                combined = $"{res.Output}\n{res.Error}".Trim();
+                if (combined.Contains("Success", StringComparison.OrdinalIgnoreCase))
+                {
+                    sw.Stop();
+                    var sec = Math.Round(sw.Elapsed.TotalSeconds, 1);
+                    onProgress?.Invoke(100, $"✅ 兼容安装成功 (耗时 {sec}s)");
+                    return (true, $"兼容安装成功 (耗时 {sec}s)");
+                }
             }
+
+            // 3. 若流式安装因无线 ADB 网络中断，且文件较大，自动启用两阶段推流安装 (push 到 /data/local/tmp 后本地 pm install)
+            var fileInfo = new FileInfo(apkPath);
+            bool isNetworkBreak = combined.Contains("closed", StringComparison.OrdinalIgnoreCase) ||
+                                  combined.Contains("reset", StringComparison.OrdinalIgnoreCase) ||
+                                  combined.Contains("Broken pipe", StringComparison.OrdinalIgnoreCase);
+
+            if (isNetworkBreak && fileInfo.Length > 100L * 1024L * 1024L)
+            {
+                onProgress?.Invoke(50, $"检测到网络流式中断，正在启用两阶段稳定安装...");
+                string remoteTmpApk = $"/data/local/tmp/pico_install_{Guid.NewGuid():N}.apk";
+                var pushRes = await RunAdbAsync($"-s \"{target}\" push \"{apkPath}\" \"{remoteTmpApk}\"", 600000, ct);
+                if (pushRes.ExitCode == 0)
+                {
+                    var pmRes = await RunAdbAsync($"-s \"{target}\" shell pm install -r -d -t -g \"{remoteTmpApk}\"", 300000, ct);
+                    // 清理远程临时包
+                    await RunAdbAsync($"-s \"{target}\" shell rm -f \"{remoteTmpApk}\"", 10000, ct);
+                    string pmCombined = $"{pmRes.Output}\n{pmRes.Error}".Trim();
+                    if (pmCombined.Contains("Success", StringComparison.OrdinalIgnoreCase))
+                    {
+                        sw.Stop();
+                        var sec = Math.Round(sw.Elapsed.TotalSeconds, 1);
+                        onProgress?.Invoke(100, $"✅ 两阶段稳定安装成功 (耗时 {sec}s)");
+                        return (true, $"两阶段稳定安装成功 (耗时 {sec}s)");
+                    }
+                    combined = pmCombined;
+                }
+            }
+
+            sw.Stop();
+            string errMsg = ParseAdbInstallError(res.Output, res.Error);
             onProgress?.Invoke(100, $"❌ 安装失败: {errMsg}");
             return (false, errMsg);
         }
@@ -429,11 +544,13 @@ namespace PicoManager.Server.Services
                 string.Equals(d.Target, snOrTarget, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(d.Ip, snOrTarget, StringComparison.OrdinalIgnoreCase));
 
-            string target = match?.Target ?? snOrTarget;
+            string target = SanitizeShellArg(match?.Target ?? snOrTarget);
             if (string.IsNullOrWhiteSpace(target))
                 return (false, "未指定有效的目标设备");
 
-            string normalized = remotePath.Trim().Replace('\\', '/');
+            string normalized = SanitizeShellArg(remotePath).Replace('\\', '/');
+            if (string.IsNullOrWhiteSpace(normalized))
+                return (false, "远程路径包含非法控制字符");
             if (!normalized.StartsWith('/')) normalized = "/" + normalized;
 
             var res = await RunAdbAsync($"-s \"{target}\" shell mkdir -p \"{normalized}\"", 10000, ct);
@@ -451,8 +568,9 @@ namespace PicoManager.Server.Services
             string packageName,
             CancellationToken ct = default)
         {
-            if (string.IsNullOrWhiteSpace(packageName))
-                return (false, "包名不能为空");
+            string cleanPkg = SanitizeShellArg(packageName);
+            if (string.IsNullOrWhiteSpace(cleanPkg))
+                return (false, "包名不能为空或包含非法控制字符");
 
             var devList = await GetConnectedDevicesAsync();
             var match = devList.FirstOrDefault(d =>
@@ -460,14 +578,14 @@ namespace PicoManager.Server.Services
                 string.Equals(d.Target, snOrTarget, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(d.Ip, snOrTarget, StringComparison.OrdinalIgnoreCase));
 
-            string target = match?.Target ?? snOrTarget;
+            string target = SanitizeShellArg(match?.Target ?? snOrTarget);
             if (string.IsNullOrWhiteSpace(target))
                 return (false, "未指定有效的目标设备");
 
-            var res = await RunAdbAsync($"-s \"{target}\" uninstall \"{packageName.Trim()}\"", 30000, ct);
+            var res = await RunAdbAsync($"-s \"{target}\" uninstall \"{cleanPkg}\"", 30000, ct);
             if (res.Output.Contains("Success", StringComparison.OrdinalIgnoreCase))
             {
-                return (true, $"卸载成功 ({packageName})");
+                return (true, $"卸载成功 ({cleanPkg})");
             }
 
             string errMsg = !string.IsNullOrWhiteSpace(res.Error) ? res.Error : res.Output;
@@ -482,7 +600,7 @@ namespace PicoManager.Server.Services
                 string.Equals(d.Target, snOrTarget, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(d.Ip, snOrTarget, StringComparison.OrdinalIgnoreCase));
 
-            string target = match?.Target ?? snOrTarget;
+            string target = SanitizeShellArg(match?.Target ?? snOrTarget);
             if (string.IsNullOrWhiteSpace(target))
                 return new List<string>();
 
@@ -497,15 +615,35 @@ namespace PicoManager.Server.Services
             return list.OrderBy(p => p).ToList();
         }
 
+        private async Task TriggerMediaScannerAsync(string target, string remoteFilePath, CancellationToken ct = default)
+        {
+            try
+            {
+                string ext = Path.GetExtension(remoteFilePath).ToLowerInvariant();
+                var mediaExts = new HashSet<string> { ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".jpg", ".jpeg", ".png", ".gif", ".webp", ".mp3", ".wav", ".ogg", ".apk" };
+                if (mediaExts.Contains(ext))
+                {
+                    await RunAdbAsync($"-s \"{target}\" shell am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d \"file://{remoteFilePath}\"", 3000, ct);
+                }
+            }
+            catch
+            {
+                // 广播失败不阻断传输主流程
+            }
+        }
+
         public async Task<(bool Success, string Message)> PushFileOrFolderAsync(
             string snOrTarget,
             string localPath,
             string remoteTargetPath,
             bool overwrite = true,
+            bool flatten = false,
             Action<int, string>? onProgress = null,
             CancellationToken ct = default)
         {
-            if (!File.Exists(localPath) && !Directory.Exists(localPath))
+            bool isFile = File.Exists(localPath);
+            bool isDir = Directory.Exists(localPath);
+            if (!isFile && !isDir)
                 return (false, $"本地路径不存在: {localPath}");
 
             var devList = await GetConnectedDevicesAsync();
@@ -514,47 +652,163 @@ namespace PicoManager.Server.Services
                 string.Equals(d.Target, snOrTarget, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(d.Ip, snOrTarget, StringComparison.OrdinalIgnoreCase));
 
-            string target = match?.Target ?? snOrTarget;
+            string target = SanitizeShellArg(match?.Target ?? snOrTarget);
             if (string.IsNullOrWhiteSpace(target))
                 return (false, "未指定有效的目标设备");
 
-            string normalizedRemote = remoteTargetPath.Trim().Replace('\\', '/');
+            string normalizedRemote = SanitizeShellArg(remoteTargetPath).Replace('\\', '/');
+            if (string.IsNullOrWhiteSpace(normalizedRemote))
+                return (false, "远程目标路径包含非法控制字符");
             if (!normalizedRemote.StartsWith('/')) normalizedRemote = "/" + normalizedRemote;
 
-            // 预先建立远端目标父目录
-            string? remoteDir = normalizedRemote.EndsWith('/') ? normalizedRemote : Path.GetDirectoryName(normalizedRemote)?.Replace('\\', '/');
-            if (!string.IsNullOrWhiteSpace(remoteDir))
+            if (isFile)
             {
-                await RunAdbAsync($"-s \"{target}\" shell mkdir -p \"{remoteDir}\"", 8000, ct);
-            }
+                string fileName = Path.GetFileName(localPath);
+                string targetDir;
+                string destRemoteFile;
 
-            // 若开启强制覆盖且已有重名文件/目录，预先执行 rm -rf 清除避免 ADB报 File exists
-            if (overwrite)
-            {
-                string cleanTarget = normalizedRemote.TrimEnd('/');
-                // 仅当目标非根目录时清理，避免误删根系统
-                if (cleanTarget.Length > 8 && cleanTarget.StartsWith("/sdcard/"))
+                bool hasExtension = Path.HasExtension(normalizedRemote);
+                if (normalizedRemote.EndsWith('/') || !hasExtension)
                 {
-                    await RunAdbAsync($"-s \"{target}\" shell rm -rf \"{cleanTarget}\"", 10000, ct);
+                    // 目标路径未显式指定文件名后缀，一律严格作为目录处理，保留源文件名
+                    targetDir = normalizedRemote.TrimEnd('/');
+                    destRemoteFile = $"{targetDir}/{fileName}";
+                }
+                else
+                {
+                    // 目标路径显式包含了文件扩展名（如 /sdcard/Download/custom.mp4）
+                    destRemoteFile = normalizedRemote;
+                    targetDir = Path.GetDirectoryName(destRemoteFile)?.Replace('\\', '/') ?? "/sdcard";
+                }
+
+                // 防呆自愈修复：若该目标目录此前曾被误推为一个同名无后缀普通文件（导致出现“无法识别文件类型”），先将其移除以确保能成功建立目录
+                await RunAdbAsync($"-s \"{target}\" shell sh -c \"if [ -f \\\"{targetDir}\\\" ]; then rm -f \\\"{targetDir}\\\"; fi\"", 5000, ct);
+
+                // 1. 确保目标父目录一定存在
+                await RunAdbAsync($"-s \"{target}\" shell mkdir -p \"{targetDir}\"", 8000, ct);
+
+                // 2. 若开启覆盖，仅针对该具体同名文件执行 rm -f 删除，绝不可删除父目录！
+                if (overwrite)
+                {
+                    await RunAdbAsync($"-s \"{target}\" shell rm -f \"{destRemoteFile}\"", 8000, ct);
+                }
+
+                onProgress?.Invoke(30, $"正在向 [{target}] 推送文件: {fileName}...");
+                var sw = Stopwatch.StartNew();
+                var res = await RunAdbAsync($"-s \"{target}\" push \"{localPath}\" \"{destRemoteFile}\"", 600000, ct);
+                sw.Stop();
+                var sec = Math.Round(sw.Elapsed.TotalSeconds, 1);
+
+                string combined = $"{res.Output}\n{res.Error}".Trim();
+                if (res.ExitCode == 0 && (combined.Contains("pushed", StringComparison.OrdinalIgnoreCase) || combined.Contains("1 file pushed") || string.IsNullOrEmpty(res.Error)))
+                {
+                    // 广播通知 Android 媒体扫描器刷新，使头显文件管理器即刻识别文件类型
+                    _ = TriggerMediaScannerAsync(target, destRemoteFile, ct);
+                    onProgress?.Invoke(100, $"✅ 传输完成 (耗时 {sec}s)");
+                    return (true, $"传输成功 (耗时 {sec}s): {fileName}");
+                }
+
+                string err = !string.IsNullOrWhiteSpace(res.Error) ? res.Error : res.Output;
+                onProgress?.Invoke(100, $"❌ 传输失败: {err}");
+                return (false, err);
+            }
+            else
+            {
+                // 目录推送
+                string targetDir = normalizedRemote.TrimEnd('/');
+                // 防呆自愈修复：若目标目录此前曾被误建为一个普通文件，先将其移除
+                await RunAdbAsync($"-s \"{target}\" shell sh -c \"if [ -f \\\"{targetDir}\\\" ]; then rm -f \\\"{targetDir}\\\"; fi\"", 5000, ct);
+                await RunAdbAsync($"-s \"{target}\" shell mkdir -p \"{targetDir}\"", 8000, ct);
+
+                var sw = Stopwatch.StartNew();
+
+                if (flatten)
+                {
+                    // 【展开传输】：将 localPath 内部所有直接文件与子文件夹，平铺推送到 targetDir 下，不再多包一层外层文件夹名
+                    var dirInfo = new DirectoryInfo(localPath);
+                    var files = dirInfo.GetFiles();
+                    var subdirs = dirInfo.GetDirectories();
+                    int totalItems = files.Length + subdirs.Length;
+
+                    if (totalItems == 0)
+                    {
+                        return (true, "所选目录为空，已在头显同步确保目标目录存在");
+                    }
+
+                    onProgress?.Invoke(20, $"正在向 [{target}] 展开推送目录内 {totalItems} 项资源...");
+
+                    int successCount = 0;
+                    var failList = new List<string>();
+
+                    // 1. 推送所有顶层文件
+                    foreach (var f in files)
+                    {
+                        string destFile = $"{targetDir}/{f.Name}";
+                        if (overwrite)
+                        {
+                            await RunAdbAsync($"-s \"{target}\" shell rm -f \"{destFile}\"", 5000, ct);
+                        }
+                        var pRes = await RunAdbAsync($"-s \"{target}\" push \"{f.FullName}\" \"{destFile}\"", 300000, ct);
+                        if (pRes.ExitCode == 0)
+                        {
+                            successCount++;
+                            _ = TriggerMediaScannerAsync(target, destFile, ct);
+                        }
+                        else
+                        {
+                            failList.Add(f.Name);
+                        }
+                    }
+
+                    // 2. 推送所有顶层子目录
+                    foreach (var d in subdirs)
+                    {
+                        var pRes = await RunAdbAsync($"-s \"{target}\" push \"{d.FullName}\" \"{targetDir}/\"", 300000, ct);
+                        if (pRes.ExitCode == 0)
+                        {
+                            successCount++;
+                        }
+                        else
+                        {
+                            failList.Add(d.Name);
+                        }
+                    }
+
+                    sw.Stop();
+                    var sec = Math.Round(sw.Elapsed.TotalSeconds, 1);
+
+                    if (failList.Count == 0)
+                    {
+                        onProgress?.Invoke(100, $"✅ 展开传输完成 (共 {totalItems} 项，耗时 {sec}s)");
+                        return (true, $"展开传输成功 (共 {totalItems} 项，耗时 {sec}s)");
+                    }
+                    else
+                    {
+                        string msg = $"展开传输部分成功: {successCount}/{totalItems}，失败: {string.Join(", ", failList.Take(3))}";
+                        onProgress?.Invoke(100, $"⚠️ {msg}");
+                        return (false, msg);
+                    }
+                }
+                else
+                {
+                    // 【保留外层文件夹】：原样推送整个文件夹到目标目录下（将在 targetDir 下创建该文件夹同名目录）
+                    onProgress?.Invoke(30, $"正在向 [{target}] 推送完整文件夹: {Path.GetFileName(localPath)}...");
+                    var res = await RunAdbAsync($"-s \"{target}\" push \"{localPath}\" \"{targetDir}/\"", 600000, ct);
+                    sw.Stop();
+                    var sec = Math.Round(sw.Elapsed.TotalSeconds, 1);
+
+                    string combined = $"{res.Output}\n{res.Error}".Trim();
+                    if (res.ExitCode == 0 && (combined.Contains("pushed", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(res.Error)))
+                    {
+                        onProgress?.Invoke(100, $"✅ 目录传输完成 (耗时 {sec}s)");
+                        return (true, $"目录传输成功 (耗时 {sec}s)");
+                    }
+
+                    string err = !string.IsNullOrWhiteSpace(res.Error) ? res.Error : res.Output;
+                    onProgress?.Invoke(100, $"❌ 目录传输失败: {err}");
+                    return (false, err);
                 }
             }
-
-            onProgress?.Invoke(30, $"正在向 [{target}] 推送文件/目录...");
-            var sw = Stopwatch.StartNew();
-            var res = await RunAdbAsync($"-s \"{target}\" push \"{localPath}\" \"{normalizedRemote}\"", 600000, ct);
-            sw.Stop();
-            var sec = Math.Round(sw.Elapsed.TotalSeconds, 1);
-
-            string combined = $"{res.Output}\n{res.Error}".Trim();
-            if (res.ExitCode == 0 && (combined.Contains("pushed", StringComparison.OrdinalIgnoreCase) || combined.Contains("1 file pushed") || string.IsNullOrEmpty(res.Error)))
-            {
-                onProgress?.Invoke(100, $"✅ 传输完成 (耗时 {sec}s)");
-                return (true, $"传输成功 (耗时 {sec}s): {res.Output.Trim()}");
-            }
-
-            string err = !string.IsNullOrWhiteSpace(res.Error) ? res.Error : res.Output;
-            onProgress?.Invoke(100, $"❌ 传输失败: {err}");
-            return (false, err);
         }
     }
 }

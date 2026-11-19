@@ -258,16 +258,22 @@
 
           <!-- 监看开启中浮动水印与停止按钮 -->
           <div id="stream-live-bar" class="hidden absolute top-2 left-2 right-2 flex items-center justify-between z-20 pointer-events-none">
-            <div class="bg-black/70 backdrop-blur px-2 py-0.5 rounded text-[10px] font-mono text-emerald-400 flex items-center gap-1.5 shadow">
-              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-              <span>LIVE 实时传输中</span>
+            <div id="stream-status-pill" onclick="openSuiteDiagModal()" class="bg-black/75 backdrop-blur px-2.5 py-1 rounded-md text-[10px] font-mono text-emerald-400 flex items-center gap-1.5 shadow pointer-events-auto cursor-pointer border border-emerald-500/30 hover:border-emerald-400 transition" title="点击打开视频流通信链路诊断">
+              <span id="stream-status-dot" class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+              <span id="stream-status-text">LIVE 实时传输中</span>
             </div>
-            <button onclick="toggleLiveStream()" class="pointer-events-auto bg-rose-600/90 hover:bg-rose-600 text-white text-[10px] font-bold px-2 py-0.5 rounded shadow transition">
-              ⏹ 停止拉流 (省流)
-            </button>
+            <div class="flex items-center gap-1.5 pointer-events-auto">
+              <button onclick="openSuiteDiagModal()" class="bg-slate-800/80 hover:bg-slate-700 text-slate-200 text-[10px] font-medium px-2 py-1 rounded shadow transition flex items-center gap-1">
+                🩺 链路诊断
+              </button>
+              <button onclick="toggleLiveStream()" class="bg-rose-600/90 hover:bg-rose-600 text-white text-[10px] font-bold px-2.5 py-1 rounded shadow transition">
+                ⏹ 停止拉流
+              </button>
+            </div>
           </div>
 
-          <div class="absolute bottom-2 right-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] text-slate-300">
+          <div class="absolute bottom-2 right-2 flex items-center gap-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] text-slate-300">
+            <span id="suite-link-indicator" class="text-slate-400 font-mono text-[9px]">套件检测中...</span>
             <span id="monitor-fps-indicator">480P</span>
           </div>
         </div>
@@ -855,9 +861,17 @@
                 </div>
               </div>
 
-              <div class="mt-3">
-                <label class="block text-slate-600 text-[11px] font-medium mb-1">选择本地 APK 安装包:</label>
-                <input type="file" id="deploy-apk-file" accept=".apk" class="w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100 border rounded-lg p-1 bg-slate-50" />
+              <div class="mt-3 space-y-2">
+                <div>
+                  <label class="block text-slate-600 text-[11px] font-medium mb-1">方式 1：选择电脑本地 APK 上传安装:</label>
+                  <input type="file" id="deploy-apk-file" accept=".apk" class="w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100 border rounded-lg p-1 bg-slate-50" />
+                </div>
+                <div>
+                  <label class="block text-slate-600 text-[11px] font-medium mb-1 flex items-center justify-between">
+                    <span>方式 2：服务器本地路径直发 <span class="text-emerald-600 font-bold">(推荐·免上传·极速秒发)</span>:</span>
+                  </label>
+                  <input type="text" id="deploy-apk-localpath" placeholder="例如: D:\VR_Games\Dino.apk" class="w-full px-3 py-1.5 text-xs border rounded-lg bg-slate-50 font-mono text-slate-700" />
+                </div>
               </div>
             </div>
 
@@ -913,9 +927,15 @@
           </div>
 
           <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-            <div>
-              <label class="block text-slate-600 text-[11px] font-medium mb-1">选择文件或 ZIP 压缩包:</label>
-              <input type="file" id="deploy-push-file" class="w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 border rounded-lg p-1 bg-slate-50" />
+            <div class="space-y-2">
+              <div>
+                <label class="block text-slate-600 text-[11px] font-medium mb-1">方式 1：选择文件或 ZIP 压缩包上传:</label>
+                <input type="file" id="deploy-push-file" class="w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 border rounded-lg p-1 bg-slate-50" />
+              </div>
+              <div>
+                <label class="block text-slate-600 text-[11px] font-medium mb-1">方式 2：服务器本地文件/目录路径直推 <span class="text-blue-600 font-bold">(免上传·极速秒传)</span>:</label>
+                <input type="text" id="deploy-push-localpath" placeholder="例如: D:\Movies\4K_VR.mp4 或 D:\VR_Assets\" class="w-full px-3 py-1.5 text-xs border rounded-lg bg-slate-50 font-mono text-slate-700" />
+              </div>
             </div>
             <div>
               <div class="flex items-center justify-between mb-1">
@@ -1070,6 +1090,98 @@
       <div class="flex justify-end gap-2 pt-2">
         <button onclick="closeAliasModal()" class="px-4 py-1.5 bg-slate-100 text-slate-600 rounded-xl text-xs font-semibold">取消</button>
         <button onclick="submitAliasModal()" class="px-5 py-1.5 bg-blue-600 text-white rounded-xl text-xs font-bold">确认保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 视频流链路与 PICO 官方套件一键诊断弹窗 -->
+  <div id="suite-diag-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-slate-100 overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200">
+      <!-- 头部 -->
+      <div class="px-6 py-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <div class="w-8 h-8 rounded-lg bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 text-base">
+            🩺
+          </div>
+          <div>
+            <h3 class="font-bold text-slate-800 text-sm">视频流通信链路与官方套件诊断</h3>
+            <p class="text-[11px] text-slate-400 mt-0.5">PICO Business Suite gRPC & ByteRTC 链路检测</p>
+          </div>
+        </div>
+        <button onclick="closeSuiteDiagModal()" class="text-slate-400 hover:text-slate-600 text-lg w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center transition">
+          ✕
+        </button>
+      </div>
+
+      <!-- 诊断列表 -->
+      <div class="p-6 space-y-4 text-xs">
+        <!-- 诊断状态摘要卡片 -->
+        <div id="diag-summary-box" class="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex items-start gap-3">
+          <span id="diag-summary-icon" class="text-xl">🔍</span>
+          <div class="flex-1">
+            <div id="diag-summary-title" class="font-bold text-slate-800 text-sm">正在执行链路全面诊断...</div>
+            <div id="diag-summary-desc" class="text-slate-500 mt-1 leading-relaxed">正在探测本地进程、gRPC 端口与头显信道状态</div>
+          </div>
+        </div>
+
+        <!-- 各节点状态条 -->
+        <div class="space-y-2.5">
+          <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+            <div class="flex items-center gap-2">
+              <span>💻</span>
+              <span class="font-medium text-slate-700">官方套件进程 (PICOBusinessSuite.exe)</span>
+            </div>
+            <span id="diag-proc-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">检测中</span>
+          </div>
+
+          <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+            <div class="flex items-center gap-2">
+              <span>🌐</span>
+              <span class="font-medium text-slate-700">gRPC 服务端口 (127.0.0.1:60061)</span>
+            </div>
+            <span id="diag-port-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">检测中</span>
+          </div>
+
+          <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+            <div class="flex items-center gap-2">
+              <span>⚙️</span>
+              <span class="font-medium text-slate-700">SDK 初始化与信道握手 (PXREAClientSDK)</span>
+            </div>
+            <span id="diag-sdk-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">检测中</span>
+          </div>
+
+          <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+            <div class="flex items-center gap-2">
+              <span>👓</span>
+              <span class="font-medium text-slate-700">当前头显推流状态 (<span id="diag-target-sn">--</span>)</span>
+            </div>
+            <span id="diag-stream-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">未拉流</span>
+          </div>
+        </div>
+
+        <!-- 诊断指引 -->
+        <div class="bg-amber-50 border border-amber-200/80 rounded-xl p-3 text-amber-900 leading-relaxed">
+          <div class="font-bold flex items-center gap-1.5 mb-1 text-[11px]">
+            <span>💡</span> <span>操作指引与排查建议</span>
+          </div>
+          <div id="diag-advice-text" class="text-[11px] text-amber-800 space-y-1">
+            <p>1. 请确保已打开 PICO Business Suite 官方软件并登录账号（未登录时套件不会开放 60061 端口）。</p>
+            <p>2. 确保头戴设备开机并处于亮屏唤醒状态，且与本机连接在同一个路由器 Wi-Fi 下。</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 底部操作按钮 -->
+      <div class="px-6 py-3.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
+        <span id="diag-time" class="text-[10px] text-slate-400 font-mono">--</span>
+        <div class="flex items-center gap-2">
+          <button onclick="reconnectSuiteSdk()" class="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm active:scale-95">
+            <span>🔄</span> 一键重新连接套件
+          </button>
+          <button onclick="closeSuiteDiagModal()" class="px-3.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-bold transition">
+            关闭
+          </button>
+        </div>
       </div>
     </div>
   </div>

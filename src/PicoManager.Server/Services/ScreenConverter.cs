@@ -85,9 +85,45 @@ namespace PicoManager.Server.Services
 
                 return BitmapToJpegBytes(bmp, quality);
             }
-            catch
+            catch (Exception ex)
             {
+                Console.WriteLine($"[ScreenConverter] YUV420P转JPEG异常 ({width}x{height}): {ex.Message}");
                 return Array.Empty<byte>();
+            }
+        }
+
+        public static byte[] Yuv420PToJpeg(byte[] yuvData, int width, int height, long quality = 75)
+        {
+            if (yuvData == null || yuvData.Length == 0 || width <= 0 || height <= 0 || width > 4096 || height > 4096)
+                return Array.Empty<byte>();
+
+            int minSize = (width * height * 3) / 2;
+            if (yuvData.Length < minSize)
+                return Array.Empty<byte>();
+
+            unsafe
+            {
+                fixed (byte* p = yuvData)
+                {
+                    return Yuv420PToJpeg((IntPtr)p, width, height, quality);
+                }
+            }
+        }
+
+        public static byte[] BgraToJpeg(byte[] bgraData, int width, int height, int bytesPerLine, long quality = 75)
+        {
+            if (bgraData == null || bgraData.Length == 0 || width <= 0 || height <= 0 || width > 4096 || height > 4096)
+                return Array.Empty<byte>();
+
+            if (bytesPerLine <= 0)
+                bytesPerLine = width * 4;
+
+            unsafe
+            {
+                fixed (byte* p = bgraData)
+                {
+                    return BgraToJpeg((IntPtr)p, width, height, bytesPerLine, quality);
+                }
             }
         }
 
@@ -104,13 +140,21 @@ namespace PicoManager.Server.Services
                 using var bmp = new Bitmap(width, height, bytesPerLine, PixelFormat.Format32bppArgb, bgraData);
                 return BitmapToJpegBytes(bmp, quality);
             }
-            catch
+            catch (Exception ex)
             {
+                Console.WriteLine($"[ScreenConverter] BGRA转JPEG异常 ({width}x{height}): {ex.Message}");
                 return Array.Empty<byte>();
             }
         }
 
-        public static byte[] GeneratePlaceholderFrame(string sn, string alias, string currentApp, uint battery, bool isPlaying)
+        public static byte[] GeneratePlaceholderFrame(
+            string sn,
+            string alias,
+            string currentApp,
+            uint battery,
+            bool isPlaying,
+            PicoManager.Server.Models.DeviceStreamStatus? streamStatus = null,
+            PicoManager.Server.Models.SuiteHealthStatus? suiteStatus = null)
         {
             int width = 640;
             int height = 360;
@@ -131,36 +175,124 @@ namespace PicoManager.Server.Services
                 // Header badge
                 using (var brush = new SolidBrush(Color.FromArgb(30, 58, 138)))
                 {
-                    g.FillRectangle(brush, 20, 20, 180, 36);
+                    g.FillRectangle(brush, 20, 16, 200, 32);
                 }
-                using (var font = new Font("Arial", 12, FontStyle.Bold))
+                using (var font = new Font("Arial", 11, FontStyle.Bold))
                 using (var brush = new SolidBrush(Color.White))
                 {
-                    g.DrawString($"设备 #{alias}", font, brush, 30, 28);
+                    g.DrawString($"设备 #{alias} ({sn.Substring(Math.Max(0, sn.Length - 6))})", font, brush, 28, 23);
                 }
 
-                // Center VR icon & info
-                using (var font = new Font("Arial", 16, FontStyle.Bold))
-                using (var brush = new SolidBrush(isPlaying ? Color.FromArgb(74, 222, 128) : Color.FromArgb(148, 163, 184)))
+                bool isSuiteOffline = (suiteStatus != null && !suiteStatus.IsPortOpen) ||
+                                      (streamStatus != null && streamStatus.Phase == PicoManager.Server.Models.StreamPhase.SuiteOffline);
+
+                if (isSuiteOffline)
                 {
-                    string statusText = isPlaying ? "● 正在运行程序" : "○ 待机中 / 桌面";
-                    var size = g.MeasureString(statusText, font);
-                    g.DrawString(statusText, font, brush, (width - size.Width) / 2, 120);
-                }
+                    // 官方套件未就绪高亮告警 HUD
+                    using (var warnBrush = new SolidBrush(Color.FromArgb(40, 239, 68, 68))) // 半透明红底
+                    using (var warnPen = new Pen(Color.FromArgb(239, 68, 68), 1.5f))
+                    {
+                        g.FillRectangle(warnBrush, 40, 75, width - 80, 190);
+                        g.DrawRectangle(warnPen, 40, 75, width - 80, 190);
+                    }
 
-                using (var font = new Font("Arial", 18, FontStyle.Bold))
-                using (var brush = new SolidBrush(Color.White))
+                    using (var font = new Font("Microsoft YaHei", 15, FontStyle.Bold))
+                    using (var brush = new SolidBrush(Color.FromArgb(248, 113, 113)))
+                    {
+                        string title = "⚠️ PICO 官方企业应用套件服务未连接";
+                        var sz = g.MeasureString(title, font);
+                        g.DrawString(title, font, brush, (width - sz.Width) / 2, 95);
+                    }
+
+                    using (var font = new Font("Microsoft YaHei", 11, FontStyle.Regular))
+                    using (var brush = new SolidBrush(Color.FromArgb(254, 202, 202)))
+                    {
+                        string line1 = "原因: 本地 gRPC 端口 (127.0.0.1:60061) 离线或套件未登录";
+                        var sz1 = g.MeasureString(line1, font);
+                        g.DrawString(line1, font, brush, (width - sz1.Width) / 2, 138);
+
+                        string line2 = "指引: 请确保在电脑上启动并登录 PICO Business Suite";
+                        var sz2 = g.MeasureString(line2, font);
+                        g.DrawString(line2, font, brush, (width - sz2.Width) / 2, 168);
+
+                        string line3 = "官方套件登录后会自动开放 60061 端口，系统将秒级自动重连";
+                        var sz3 = g.MeasureString(line3, font);
+                        g.DrawString(line3, font, brush, (width - sz3.Width) / 2, 198);
+                    }
+                }
+                else if (streamStatus?.Phase == PicoManager.Server.Models.StreamPhase.WaitingFirstFrame)
                 {
-                    var size = g.MeasureString(currentApp, font);
-                    g.DrawString(currentApp, font, brush, (width - size.Width) / 2, 165);
+                    // 等待首帧推流 HUD
+                    using (var bgBrush = new SolidBrush(Color.FromArgb(40, 14, 165, 233))) // 半透明天蓝底
+                    using (var bgPen = new Pen(Color.FromArgb(14, 165, 233), 1.5f))
+                    {
+                        g.FillRectangle(bgBrush, 40, 80, width - 80, 180);
+                        g.DrawRectangle(bgPen, 40, 80, width - 80, 180);
+                    }
+
+                    using (var font = new Font("Microsoft YaHei", 14, FontStyle.Bold))
+                    using (var brush = new SolidBrush(Color.FromArgb(56, 189, 248)))
+                    {
+                        string title = "📡 监看指令已下发至头显 (StartMonitorScreen)";
+                        var sz = g.MeasureString(title, font);
+                        g.DrawString(title, font, brush, (width - sz.Width) / 2, 105);
+                    }
+
+                    using (var font = new Font("Microsoft YaHei", 11, FontStyle.Regular))
+                    using (var brush = new SolidBrush(Color.FromArgb(186, 230, 253)))
+                    {
+                        string line1 = "正在等待头显 ByteRTC 房间推流响应首帧...";
+                        var sz1 = g.MeasureString(line1, font);
+                        g.DrawString(line1, font, brush, (width - sz1.Width) / 2, 148);
+
+                        string line2 = "提示: 请确保头盔佩戴/亮屏且与电脑连接在同一局域网 Wi-Fi";
+                        var sz2 = g.MeasureString(line2, font);
+                        g.DrawString(line2, font, brush, (width - sz2.Width) / 2, 180);
+                    }
+                }
+                else
+                {
+                    // 标准待机 / 桌面 HUD
+                    using (var font = new Font("Microsoft YaHei", 14, FontStyle.Bold))
+                    using (var brush = new SolidBrush(isPlaying ? Color.FromArgb(74, 222, 128) : Color.FromArgb(148, 163, 184)))
+                    {
+                        string statusText = isPlaying ? "● 正在运行体验程序" : "○ 头显待机中 / 系统桌面";
+                        var size = g.MeasureString(statusText, font);
+                        g.DrawString(statusText, font, brush, (width - size.Width) / 2, 100);
+                    }
+
+                    using (var font = new Font("Microsoft YaHei", 16, FontStyle.Bold))
+                    using (var brush = new SolidBrush(Color.White))
+                    {
+                        var size = g.MeasureString(currentApp, font);
+                        g.DrawString(currentApp, font, brush, (width - size.Width) / 2, 138);
+                    }
+
+                    // 诊断提示
+                    string displayHint = streamStatus?.DiagnosticMessage ?? "💡 省流待命中，点击右侧/控制台「开启监看」拉取实时画面";
+                    using (var font = new Font("Microsoft YaHei", 11, FontStyle.Regular))
+                    using (var brush = new SolidBrush(Color.FromArgb(56, 189, 248)))
+                    {
+                        var size = g.MeasureString(displayHint, font);
+                        g.DrawString(displayHint, font, brush, (width - size.Width) / 2, 180);
+                    }
+
+                    using (var font = new Font("Microsoft YaHei", 10, FontStyle.Regular))
+                    using (var brush = new SolidBrush(Color.FromArgb(100, 116, 139)))
+                    {
+                        string subHint = "PICO 官方企业应用套件协同通道 | 支持 480P~1080P 自适应帧率";
+                        var size = g.MeasureString(subHint, font);
+                        g.DrawString(subHint, font, brush, (width - size.Width) / 2, 212);
+                    }
                 }
 
-                // Bottom telemetry
-                using (var font = new Font("Arial", 11, FontStyle.Regular))
+                // 底部状态栏
+                using (var font = new Font("Microsoft YaHei", 10, FontStyle.Regular))
                 using (var brush = new SolidBrush(Color.FromArgb(148, 163, 184)))
                 {
-                    g.DrawString($"SN: {sn}", font, brush, 25, 315);
-                    g.DrawString($"电量: {battery}% | 时间: {DateTime.Now:HH:mm:ss}", font, brush, 400, 315);
+                    string suiteTag = (suiteStatus?.IsPortOpen == true || streamStatus?.Phase == PicoManager.Server.Models.StreamPhase.Streaming) ? "🟢 官方套件已联机" : "🔴 官方套件服务未连接";
+                    g.DrawString($"SN: {sn} | 电量: {battery}%", font, brush, 25, 320);
+                    g.DrawString($"{suiteTag} | {DateTime.Now:HH:mm:ss}", font, brush, 360, 320);
                 }
             }
 

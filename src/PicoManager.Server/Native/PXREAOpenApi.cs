@@ -108,13 +108,37 @@ namespace PicoManager.Server.Native
         }
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
-        public static extern int StartMonitorScreen([MarshalAs(UnmanagedType.LPStr)] string devID, PXREAMonitorQuality quality);
+        public static extern int StartMonitorScreen(IntPtr devID, PXREAMonitorQuality quality);
+
+        public static int StartMonitorScreen(string devID, PXREAMonitorQuality quality)
+        {
+            if (string.IsNullOrEmpty(devID)) return -1;
+            IntPtr ptr = Marshal.StringToHGlobalAnsi(devID);
+            try { return StartMonitorScreen(ptr, quality); }
+            finally { Marshal.FreeHGlobal(ptr); }
+        }
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
-        public static extern int SetMonitorScreenQuality([MarshalAs(UnmanagedType.LPStr)] string devID, PXREAMonitorQuality quality);
+        public static extern int SetMonitorScreenQuality(IntPtr devID, PXREAMonitorQuality quality);
+
+        public static int SetMonitorScreenQuality(string devID, PXREAMonitorQuality quality)
+        {
+            if (string.IsNullOrEmpty(devID)) return -1;
+            IntPtr ptr = Marshal.StringToHGlobalAnsi(devID);
+            try { return SetMonitorScreenQuality(ptr, quality); }
+            finally { Marshal.FreeHGlobal(ptr); }
+        }
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
-        public static extern int StopMonitorScreen([MarshalAs(UnmanagedType.LPStr)] string devID);
+        public static extern int StopMonitorScreen(IntPtr devID);
+
+        public static int StopMonitorScreen(string devID)
+        {
+            if (string.IsNullOrEmpty(devID)) return -1;
+            IntPtr ptr = Marshal.StringToHGlobalAnsi(devID);
+            try { return StopMonitorScreen(ptr); }
+            finally { Marshal.FreeHGlobal(ptr); }
+        }
 
         [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int StartMonitorStream([MarshalAs(UnmanagedType.LPStr)] string devID);

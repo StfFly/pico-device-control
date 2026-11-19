@@ -13,6 +13,14 @@ namespace PicoManager.Server.Models
         public string ExtraJson { get; set; } = string.Empty;
     }
 
+    public class DeviceGroup
+    {
+        public string Id { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string DefaultProjectId { get; set; } = string.Empty;
+        public List<string> DeviceIdentifiers { get; set; } = new();
+    }
+
     public class SystemConfig
     {
         public int WebPort { get; set; } = 8999;
@@ -21,6 +29,7 @@ namespace PicoManager.Server.Models
         public bool AutoLockOnFind { get; set; } = true;
         public bool EnableSimulatorFallback { get; set; } = true;
         public List<AppProject> Projects { get; set; } = new();
+        public List<DeviceGroup> Groups { get; set; } = new();
         public Dictionary<string, string> HeadsetAliases { get; set; } = new();
         /// <summary>
         /// 机器号或 SN 与默认启动游戏项目 Id 或包名的持久化映射表

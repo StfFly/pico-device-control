@@ -19,64 +19,65 @@
 <body class="bg-slate-100 text-slate-800 min-h-screen flex flex-col font-sans select-none antialiased">
 
   <!-- ======================== 1. 顶部全局导航栏 ======================== -->
-  <header class="bg-white border-b border-slate-200 px-6 py-3 sticky top-0 z-30 shadow-sm flex items-center justify-between">
-    <div class="flex items-center gap-4">
+  <header class="bg-white border-b border-slate-200 px-3.5 sm:px-6 py-2.5 sm:py-3 sticky top-0 z-30 shadow-sm flex flex-wrap md:flex-nowrap items-center justify-between gap-2.5 sm:gap-3">
+    <div class="flex items-center gap-3">
       <div class="flex items-center gap-2.5">
         <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white font-black text-lg shadow-md shadow-blue-500/20">
           P
         </div>
         <div>
           <div class="flex items-center gap-2">
-            <h1 class="font-bold text-base text-slate-900 tracking-tight">PICO VR 运营工作台</h1>
-            <span id="system-status-pill" class="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200 font-medium flex items-center gap-1">
+            <h1 class="font-bold text-sm sm:text-base text-slate-900 tracking-tight">PICO VR 运营工作台</h1>
+            <span id="system-status-pill" class="text-[10px] sm:text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200 font-medium flex items-center gap-1">
               <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse-dot"></span>
               <span id="system-status-text">服务连接中...</span>
             </span>
           </div>
-          <p class="text-xs text-slate-400">PICO Enterprise Suite 集中控制中心 | 端口 8999 局域网终端</p>
+          <p class="text-[11px] sm:text-xs text-slate-400">PICO Enterprise Suite 集中控制中心 | 端口 8999 局域网终端</p>
         </div>
       </div>
     </div>
 
     <!-- 顶部状态汇总指标与配置入口 -->
-    <div class="flex items-center gap-2 sm:gap-3 text-xs">
-      <div class="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
-        <span class="text-slate-400">总设备:</span>
+    <div class="flex items-center gap-1.5 sm:gap-2.5 text-xs flex-wrap">
+      <div class="bg-slate-50 border border-slate-200 rounded-lg px-2 sm:px-2.5 py-1 sm:py-1.5 flex items-center gap-1">
+        <span class="text-slate-400 text-[11px]">总设备:</span>
         <span class="font-bold text-slate-800 font-mono" id="stat-total">0</span>
       </div>
-      <div class="bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
-        <span class="text-emerald-600">空闲就绪:</span>
+      <div class="bg-emerald-50 border border-emerald-200 rounded-lg px-2 sm:px-2.5 py-1 sm:py-1.5 flex items-center gap-1">
+        <span class="text-emerald-600 text-[11px]">空闲就绪:</span>
         <span class="font-bold text-emerald-700 font-mono text-sm" id="stat-idle">0</span>
       </div>
-      <div class="bg-blue-50 border border-blue-200 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
-        <span class="text-blue-600">体验中:</span>
+      <div class="bg-blue-50 border border-blue-200 rounded-lg px-2 sm:px-2.5 py-1 sm:py-1.5 flex items-center gap-1">
+        <span class="text-blue-600 text-[11px]">体验中:</span>
         <span class="font-bold text-blue-700 font-mono text-sm" id="stat-running">0</span>
       </div>
-      <div class="bg-rose-50 border border-rose-200 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
-        <span class="text-rose-600">低电量:</span>
+      <div class="bg-rose-50 border border-rose-200 rounded-lg px-2 sm:px-2.5 py-1 sm:py-1.5 flex items-center gap-1">
+        <span class="text-rose-600 text-[11px]">低电量:</span>
         <span class="font-bold text-rose-700 font-mono text-sm" id="stat-low">0</span>
       </div>
-      <div class="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5">
-        <span class="text-slate-400">离线:</span>
+      <div class="bg-slate-50 border border-slate-200 rounded-lg px-2 sm:px-2.5 py-1 sm:py-1.5 flex items-center gap-1">
+        <span class="text-slate-400 text-[11px]">离线:</span>
         <span class="font-bold text-slate-500 font-mono" id="stat-offline">0</span>
       </div>
 
       <!-- 顶部快捷管理入口 -->
-      <button onclick="openAdbModal()" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition shadow-sm ml-1" title="无线 ADB 局域网扫描与设备控制">
+      <button onclick="openAdbModal()" class="px-2.5 sm:px-3 py-1 sm:py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition shadow-sm ml-0.5" title="无线 ADB 局域网扫描与设备控制">
         <span>⚡</span> 无线 ADB
       </button>
-      <button onclick="openOtaModal()" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition shadow-sm" title="远程 OTA 在线升级与热更新">
+      <button onclick="openOtaModal()" class="px-2.5 sm:px-3 py-1 sm:py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition shadow-sm" title="远程 OTA 在线升级与热更新">
         <span>🔄</span> OTA 升级
       </button>
-      <button onclick="openConfigModal()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition shadow-sm">
+      <button onclick="openConfigModal()" class="px-2.5 sm:px-3 py-1 sm:py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition shadow-sm">
         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
-        配置头盔与包名
+        <span class="hidden sm:inline">配置头盔与包名</span>
+        <span class="sm:hidden">设置</span>
       </button>
     </div>
   </header>
 
   <!-- ======================== 2. 核心工作台：左右结构 ======================== -->
-  <div class="flex-1 max-w-[1760px] w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-5">
+  <div class="flex-1 max-w-[1760px] w-full mx-auto p-3 sm:p-4 md:p-5 lg:p-6 grid grid-cols-1 lg:grid-cols-12 gap-3.5 sm:gap-4 md:gap-5">
 
     <!-- ======================== 左侧主区：操作动线与设备看板 (8-9 Cols) ======================== -->
     <div class="lg:col-span-8 xl:col-span-9 flex flex-col gap-4">
@@ -93,34 +94,47 @@
           </button>
         </div>
 
-        <!-- 内容海报卡横向列表 (动态填充) -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3.5" id="project-cards-container">
+        <!-- 内容海报卡横向列表 (动态填充，针对平板横竖屏优化) -->
+        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-6 gap-3" id="project-cards-container">
           <!-- 动态加载 -->
         </div>
       </div>
 
       <!-- 操作步骤 2：快捷选择机位与一键控制 (第二步 · 选机并执行) -->
-      <div class="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm flex flex-col gap-4">
+      <div class="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm flex flex-col gap-3.5 sm:gap-4">
         
+        <!-- 设备分组标签栏 (按区/按组分类过滤与联动) -->
+        <div class="flex items-center justify-between gap-2.5 pb-2.5 border-b border-slate-100 flex-wrap">
+          <div class="flex items-center gap-1.5 sm:gap-2 flex-wrap" id="device-group-tabs">
+            <!-- 动态渲染：[🌐 全部设备] [🏷️ A区] ... -->
+          </div>
+          <button onclick="openGroupManageModal()" class="px-2.5 py-1.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 shadow-xs" title="新建与管理设备分组">
+            <span>⚙️</span> 管理分组
+          </button>
+        </div>
+
         <!-- 选机快捷按钮组 -->
         <div class="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
           <div class="flex items-center gap-2 flex-wrap">
-            <div class="flex items-center gap-1.5 mr-2">
+            <div class="flex items-center gap-1.5 mr-1">
               <span class="w-5 h-5 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center justify-center">2</span>
-              <span class="font-bold text-sm text-slate-900">第二步 · 选择机号:</span>
+              <span class="font-bold text-sm text-slate-900">选择机号:</span>
             </div>
 
             <!-- 一键全选系列按钮 -->
-            <button onclick="selectAllOnline()" class="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-bold transition flex items-center gap-1">
-              <span>☑️</span> 一键全选所有机 (<span id="btn-total-online">0</span>台)
+            <button onclick="selectAllOnline()" class="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-bold transition flex items-center gap-1 min-h-[36px]">
+              <span>☑️</span> 全选所有机 (<span id="btn-total-online">0</span>)
             </button>
-            <button onclick="selectAllIdle()" class="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold transition flex items-center gap-1">
-              <span>🟢</span> 仅选空闲机 (<span id="btn-total-idle">0</span>台)
+            <button id="btn-select-group" onclick="selectCurrentGroup()" class="hidden px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 rounded-lg text-xs font-bold transition flex items-center gap-1 min-h-[36px]">
+              <span>🎯</span> 全选本组 (<span id="btn-total-group">0</span>)
             </button>
-            <button onclick="selectAllRunning()" class="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-bold transition flex items-center gap-1">
-              <span>🔵</span> 仅选体验中机 (<span id="btn-total-running">0</span>台)
+            <button onclick="selectAllIdle()" class="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold transition flex items-center gap-1 min-h-[36px]">
+              <span>🟢</span> 选空闲机 (<span id="btn-total-idle">0</span>)
             </button>
-            <button onclick="clearSelection()" class="px-2.5 py-1.5 text-slate-400 hover:text-slate-600 text-xs">
+            <button onclick="selectAllRunning()" class="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-bold transition flex items-center gap-1 min-h-[36px]">
+              <span>🔵</span> 选体验中 (<span id="btn-total-running">0</span>)
+            </button>
+            <button onclick="clearSelection()" class="px-2.5 py-1.5 text-slate-400 hover:text-slate-600 text-xs min-h-[36px]">
               清空勾选
             </button>
 
@@ -207,8 +221,8 @@
           <span class="text-xs text-slate-400">点击卡片选中/取消，点击 👁️ 调取单机监看</span>
         </div>
 
-        <!-- 矩阵卡片网格 -->
-        <div id="device-matrix" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+        <!-- 矩阵卡片网格 (针对平板 iPad 竖屏4列、横屏及桌面宽屏弹性适配) -->
+        <div id="device-matrix" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6 gap-2.5 sm:gap-3">
           <!-- 动态填充 -->
         </div>
       </div>
@@ -258,16 +272,22 @@
 
           <!-- 监看开启中浮动水印与停止按钮 -->
           <div id="stream-live-bar" class="hidden absolute top-2 left-2 right-2 flex items-center justify-between z-20 pointer-events-none">
-            <div class="bg-black/70 backdrop-blur px-2 py-0.5 rounded text-[10px] font-mono text-emerald-400 flex items-center gap-1.5 shadow">
-              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-              <span>LIVE 实时传输中</span>
+            <div id="stream-status-pill" onclick="openSuiteDiagModal()" class="bg-black/75 backdrop-blur px-2.5 py-1 rounded-md text-[10px] font-mono text-emerald-400 flex items-center gap-1.5 shadow pointer-events-auto cursor-pointer border border-emerald-500/30 hover:border-emerald-400 transition" title="点击打开视频流通信链路诊断">
+              <span id="stream-status-dot" class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+              <span id="stream-status-text">LIVE 实时传输中</span>
             </div>
-            <button onclick="toggleLiveStream()" class="pointer-events-auto bg-rose-600/90 hover:bg-rose-600 text-white text-[10px] font-bold px-2 py-0.5 rounded shadow transition">
-              ⏹ 停止拉流 (省流)
-            </button>
+            <div class="flex items-center gap-1.5 pointer-events-auto">
+              <button onclick="openSuiteDiagModal()" class="bg-slate-800/80 hover:bg-slate-700 text-slate-200 text-[10px] font-medium px-2 py-1 rounded shadow transition flex items-center gap-1">
+                🩺 链路诊断
+              </button>
+              <button onclick="toggleLiveStream()" class="bg-rose-600/90 hover:bg-rose-600 text-white text-[10px] font-bold px-2.5 py-1 rounded shadow transition">
+                ⏹ 停止拉流
+              </button>
+            </div>
           </div>
 
-          <div class="absolute bottom-2 right-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] text-slate-300">
+          <div class="absolute bottom-2 right-2 flex items-center gap-2 bg-black/60 backdrop-blur px-2 py-0.5 rounded text-[10px] text-slate-300">
+            <span id="suite-link-indicator" class="text-slate-400 font-mono text-[9px]">套件检测中...</span>
             <span id="monitor-fps-indicator">480P</span>
           </div>
         </div>
@@ -855,9 +875,17 @@
                 </div>
               </div>
 
-              <div class="mt-3">
-                <label class="block text-slate-600 text-[11px] font-medium mb-1">选择本地 APK 安装包:</label>
-                <input type="file" id="deploy-apk-file" accept=".apk" class="w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100 border rounded-lg p-1 bg-slate-50" />
+              <div class="mt-3 space-y-2">
+                <div>
+                  <label class="block text-slate-600 text-[11px] font-medium mb-1">方式 1：选择电脑本地 APK 上传安装:</label>
+                  <input type="file" id="deploy-apk-file" accept=".apk" class="w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100 border rounded-lg p-1 bg-slate-50" />
+                </div>
+                <div>
+                  <label class="block text-slate-600 text-[11px] font-medium mb-1 flex items-center justify-between">
+                    <span>方式 2：服务器本地路径直发 <span class="text-emerald-600 font-bold">(推荐·免上传·极速秒发)</span>:</span>
+                  </label>
+                  <input type="text" id="deploy-apk-localpath" placeholder="例如: D:\VR_Games\Dino.apk" class="w-full px-3 py-1.5 text-xs border rounded-lg bg-slate-50 font-mono text-slate-700" />
+                </div>
               </div>
             </div>
 
@@ -913,9 +941,15 @@
           </div>
 
           <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-            <div>
-              <label class="block text-slate-600 text-[11px] font-medium mb-1">选择文件或 ZIP 压缩包:</label>
-              <input type="file" id="deploy-push-file" class="w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 border rounded-lg p-1 bg-slate-50" />
+            <div class="space-y-2">
+              <div>
+                <label class="block text-slate-600 text-[11px] font-medium mb-1">方式 1：选择文件或 ZIP 压缩包上传:</label>
+                <input type="file" id="deploy-push-file" class="w-full text-xs text-slate-600 file:mr-2 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 border rounded-lg p-1 bg-slate-50" />
+              </div>
+              <div>
+                <label class="block text-slate-600 text-[11px] font-medium mb-1">方式 2：服务器本地文件/目录路径直推 <span class="text-blue-600 font-bold">(免上传·极速秒传)</span>:</label>
+                <input type="text" id="deploy-push-localpath" placeholder="例如: D:\Movies\4K_VR.mp4 或 D:\VR_Assets\" class="w-full px-3 py-1.5 text-xs border rounded-lg bg-slate-50 font-mono text-slate-700" />
+              </div>
             </div>
             <div>
               <div class="flex items-center justify-between mb-1">
@@ -932,11 +966,17 @@
             </div>
           </div>
 
-          <div class="pt-2 border-t border-slate-100 flex items-center justify-between">
-            <label class="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer select-none">
-              <input type="checkbox" id="deploy-push-overwrite" checked class="rounded text-blue-600 accent-blue-600" />
-              <span>遇到同名文件/目录时强制覆盖替换</span>
-            </label>
+          <div class="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
+            <div class="flex items-center gap-4">
+              <label class="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer select-none" title="遇到头显中同名文件时直接替换">
+                <input type="checkbox" id="deploy-push-overwrite" checked class="rounded text-blue-600 accent-blue-600" />
+                <span>遇到同名文件时强制覆盖</span>
+              </label>
+              <label class="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer select-none" title="勾选后，会将文件夹或ZIP内部的所有文件直接平铺推送到目标目录下，不再在头显里多建一层外层文件夹">
+                <input type="checkbox" id="deploy-push-flatten" class="rounded text-blue-600 accent-blue-600" />
+                <span>展开传输目录内部文件（不保留外层文件夹）</span>
+              </label>
+            </div>
             <button onclick="executeDeployPushFile()" class="px-5 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold rounded-xl text-xs shadow-md shadow-blue-600/30 transition flex items-center gap-1.5">
               <span>📤</span> 开始批量推送到头显存储
             </button>
@@ -944,12 +984,21 @@
         </div>
 
         <!-- 部署控制台输出与进度 -->
-        <div id="deploy-console-box" class="hidden bg-slate-900 text-emerald-400 p-3.5 rounded-xl text-xs font-mono max-h-48 overflow-y-auto space-y-1">
-          <div class="flex items-center justify-between border-b border-slate-800 pb-1 mb-1 text-slate-400 text-[10px]">
-            <span>📋 部署进度与执行回执日志:</span>
-            <button onclick="document.getElementById('deploy-console-box').classList.add('hidden')" class="hover:text-white">收起</button>
+        <div id="deploy-console-box" class="hidden bg-slate-900 text-emerald-400 p-4 rounded-xl text-xs font-mono min-h-[260px] max-h-[460px] overflow-y-auto space-y-1 shadow-inner border border-slate-800 transition-all flex flex-col">
+          <div class="flex items-center justify-between border-b border-slate-800 pb-2 mb-2 text-slate-400 text-[11px] sticky top-0 bg-slate-900/95 backdrop-blur z-10 select-none">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+              <span class="font-bold text-white">📋 批量推送与安装执行日志</span>
+              <span id="deploy-log-counter" class="text-[10px] px-1.5 py-0.2 bg-slate-800 text-slate-400 rounded">0 条</span>
+            </div>
+            <div class="flex items-center gap-1.5 sm:gap-2">
+              <button onclick="copyDeployLog()" class="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 rounded text-[10px] transition" title="复制所有日志到剪贴板">📋 复制</button>
+              <button onclick="clearDeployLog()" class="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 rounded text-[10px] transition" title="清空当前日志">🗑️ 清空</button>
+              <button onclick="toggleDeployLogHeight()" id="btn-deploy-log-toggle" class="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 rounded text-[10px] transition" title="放大/还原窗口高度">⛶ 展开</button>
+              <button onclick="document.getElementById('deploy-console-box').classList.add('hidden')" class="px-2 py-0.5 hover:text-white text-slate-400 text-[10px]">✕ 收起</button>
+            </div>
           </div>
-          <div id="deploy-console-logs" class="whitespace-pre-wrap break-all leading-relaxed"></div>
+          <div id="deploy-console-logs" class="whitespace-pre-wrap break-all leading-relaxed font-mono flex-1"></div>
         </div>
       </div>
 
@@ -1070,6 +1119,175 @@
       <div class="flex justify-end gap-2 pt-2">
         <button onclick="closeAliasModal()" class="px-4 py-1.5 bg-slate-100 text-slate-600 rounded-xl text-xs font-semibold">取消</button>
         <button onclick="submitAliasModal()" class="px-5 py-1.5 bg-blue-600 text-white rounded-xl text-xs font-bold">确认保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ======================== 设备分组与分区播控管理弹窗 ======================== -->
+  <div id="group-modal" class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm hidden flex items-center justify-center p-3 sm:p-4">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden border border-slate-200 animate-fadeIn">
+      <!-- 头部 -->
+      <div class="px-5 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+        <div class="flex items-center gap-2.5">
+          <span class="w-8 h-8 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-sm shadow-xs">🏷️</span>
+          <div>
+            <h3 class="font-bold text-slate-800 text-sm">设备分组与分区播控管理</h3>
+            <p class="text-[11px] text-slate-400">按区域/体验厅划分头显设备，并可绑定各组默认启动的 VR 游戏</p>
+          </div>
+        </div>
+        <button onclick="closeGroupManageModal()" class="text-slate-400 hover:text-slate-600 p-1 rounded-lg">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <!-- 中间内容区 -->
+      <div class="p-5 flex-1 overflow-y-auto space-y-4 text-xs">
+        <!-- 分组列表 -->
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-slate-700">现有分组列表:</span>
+            <button onclick="openNewGroupForm()" class="px-2.5 py-1 bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 rounded-lg font-bold flex items-center gap-1 transition">
+              <span>➕</span> 新增分组
+            </button>
+          </div>
+          <div id="group-list-container" class="space-y-2">
+            <!-- 动态渲染各分组项 -->
+          </div>
+        </div>
+
+        <!-- 新增/编辑分组表单 (折叠在下方呈现) -->
+        <div id="group-edit-form" class="hidden bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+          <div class="flex items-center justify-between border-b border-slate-200 pb-2">
+            <h4 class="font-bold text-slate-800 text-xs" id="group-form-title">编辑分组</h4>
+            <button onclick="cancelGroupForm()" class="text-slate-400 hover:text-slate-600 text-xs">取消</button>
+          </div>
+          <input type="hidden" id="group-form-id" />
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label class="block text-slate-600 text-[11px] font-medium mb-1">分组名称 <span class="text-rose-500">*</span></label>
+              <input type="text" id="group-form-name" placeholder="例如: A区 - 恐龙区" class="w-full px-3 py-1.5 border rounded-lg bg-white" />
+            </div>
+            <div>
+              <label class="block text-slate-600 text-[11px] font-medium mb-1">该组预设游戏 (联动自动选中)</label>
+              <select id="group-form-project" class="w-full px-3 py-1.5 border rounded-lg bg-white">
+                <option value="">-- 不预设（手动选游戏）--</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <label class="block text-slate-600 text-[11px] font-medium">勾选归属此分组的设备:</label>
+              <div class="flex items-center gap-2 text-[11px]">
+                <button type="button" onclick="toggleAllGroupDevices(true)" class="text-blue-600 hover:underline">全选</button>
+                <button type="button" onclick="toggleAllGroupDevices(false)" class="text-slate-400 hover:underline">全不选</button>
+              </div>
+            </div>
+            <div id="group-device-selector-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto p-2 bg-white border rounded-lg">
+              <!-- 动态呈现设备复选框 -->
+            </div>
+          </div>
+          <div class="pt-2 flex justify-end gap-2">
+            <button onclick="cancelGroupForm()" class="px-3 py-1.5 bg-slate-200 text-slate-700 rounded-lg">取消</button>
+            <button onclick="saveGroupFromForm()" class="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow-sm">保存分组</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 底部关闭按钮 -->
+      <div class="px-5 py-3 border-t border-slate-100 bg-slate-50 flex justify-end">
+        <button onclick="closeGroupManageModal()" class="px-4 py-1.5 bg-slate-800 text-white rounded-lg font-semibold hover:bg-slate-700 text-xs">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 视频流链路与 PICO 官方套件一键诊断弹窗 -->
+  <div id="suite-diag-modal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-white rounded-2xl max-w-lg w-full shadow-2xl border border-slate-100 overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200">
+      <!-- 头部 -->
+      <div class="px-6 py-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <div class="w-8 h-8 rounded-lg bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 text-base">
+            🩺
+          </div>
+          <div>
+            <h3 class="font-bold text-slate-800 text-sm">视频流通信链路与官方套件诊断</h3>
+            <p class="text-[11px] text-slate-400 mt-0.5">PICO Business Suite gRPC & ByteRTC 链路检测</p>
+          </div>
+        </div>
+        <button onclick="closeSuiteDiagModal()" class="text-slate-400 hover:text-slate-600 text-lg w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center transition">
+          ✕
+        </button>
+      </div>
+
+      <!-- 诊断列表 -->
+      <div class="p-6 space-y-4 text-xs">
+        <!-- 诊断状态摘要卡片 -->
+        <div id="diag-summary-box" class="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex items-start gap-3">
+          <span id="diag-summary-icon" class="text-xl">🔍</span>
+          <div class="flex-1">
+            <div id="diag-summary-title" class="font-bold text-slate-800 text-sm">正在执行链路全面诊断...</div>
+            <div id="diag-summary-desc" class="text-slate-500 mt-1 leading-relaxed">正在探测本地进程、gRPC 端口与头显信道状态</div>
+          </div>
+        </div>
+
+        <!-- 各节点状态条 -->
+        <div class="space-y-2.5">
+          <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+            <div class="flex items-center gap-2">
+              <span>💻</span>
+              <span class="font-medium text-slate-700">官方套件进程 (PICOBusinessSuite.exe)</span>
+            </div>
+            <span id="diag-proc-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">检测中</span>
+          </div>
+
+          <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+            <div class="flex items-center gap-2">
+              <span>🌐</span>
+              <span class="font-medium text-slate-700">gRPC 服务端口 (127.0.0.1:60061)</span>
+            </div>
+            <span id="diag-port-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">检测中</span>
+          </div>
+
+          <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+            <div class="flex items-center gap-2">
+              <span>⚙️</span>
+              <span class="font-medium text-slate-700">SDK 初始化与信道握手 (PXREAClientSDK)</span>
+            </div>
+            <span id="diag-sdk-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">检测中</span>
+          </div>
+
+          <div class="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+            <div class="flex items-center gap-2">
+              <span>👓</span>
+              <span class="font-medium text-slate-700">当前头显推流状态 (<span id="diag-target-sn">--</span>)</span>
+            </div>
+            <span id="diag-stream-badge" class="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600">未拉流</span>
+          </div>
+        </div>
+
+        <!-- 诊断指引 -->
+        <div class="bg-amber-50 border border-amber-200/80 rounded-xl p-3 text-amber-900 leading-relaxed">
+          <div class="font-bold flex items-center gap-1.5 mb-1 text-[11px]">
+            <span>💡</span> <span>操作指引与排查建议</span>
+          </div>
+          <div id="diag-advice-text" class="text-[11px] text-amber-800 space-y-1">
+            <p>1. 请确保已打开 PICO Business Suite 官方软件并登录账号（未登录时套件不会开放 60061 端口）。</p>
+            <p>2. 确保头戴设备开机并处于亮屏唤醒状态，且与本机连接在同一个路由器 Wi-Fi 下。</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 底部操作按钮 -->
+      <div class="px-6 py-3.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
+        <span id="diag-time" class="text-[10px] text-slate-400 font-mono">--</span>
+        <div class="flex items-center gap-2">
+          <button onclick="reconnectSuiteSdk()" class="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-sm active:scale-95">
+            <span>🔄</span> 一键重新连接套件
+          </button>
+          <button onclick="closeSuiteDiagModal()" class="px-3.5 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-bold transition">
+            关闭
+          </button>
+        </div>
       </div>
     </div>
   </div>

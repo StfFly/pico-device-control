@@ -1,4 +1,4 @@
-﻿{
+{
   "WebPort": 8999,
   "UdpPort": 8998,
   "EnableUdpService": true,
@@ -39,6 +39,24 @@
       "PackageName": "com.pico.vrplayer",
       "DurationMinutes": 20,
       "Icon": "🎬",
+      "ExtraJson": ""
+    },
+    {
+      "Id": "proj-5",
+      "Name": "王城迷阵",
+      "Type": "vr_app",
+      "PackageName": "com.goldon.wangchengmizhen",
+      "DurationMinutes": 15,
+      "Icon": "🎮",
+      "ExtraJson": ""
+    },
+    {
+      "Id": "proj-6",
+      "Name": "王城迷阵 (大师版)",
+      "Type": "vr_app",
+      "PackageName": "com.goldon.wangchengmizhenMaster",
+      "DurationMinutes": 15,
+      "Icon": "🎮",
       "ExtraJson": ""
     }
   ],

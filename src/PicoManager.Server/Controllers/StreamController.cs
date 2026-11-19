@@ -1,9 +1,11 @@
 using System;
 using System.IO;
 using System.Text;
+using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
+using PicoManager.Server.Models;
 using PicoManager.Server.Services;
 
 namespace PicoManager.Server.Controllers
@@ -14,29 +16,51 @@ namespace PicoManager.Server.Controllers
     {
         private readonly ScreenMonitorService _screenMonitorService;
         private readonly PicoDeviceManager _deviceManager;
+        private readonly PicoSdkService _sdkService;
 
-        public StreamController(ScreenMonitorService screenMonitorService, PicoDeviceManager deviceManager)
+        public StreamController(
+            ScreenMonitorService screenMonitorService,
+            PicoDeviceManager deviceManager,
+            PicoSdkService sdkService)
         {
             _screenMonitorService = screenMonitorService;
             _deviceManager = deviceManager;
+            _sdkService = sdkService;
+        }
+
+        [HttpGet("suite-status")]
+        public async Task<IActionResult> GetSuiteStatus()
+        {
+            var health = await _sdkService.CheckSuiteHealthAsync();
+            return Ok(health);
+        }
+
+        [HttpPost("reconnect")]
+        public async Task<IActionResult> ReconnectSuite()
+        {
+            bool ok = await _sdkService.ReconnectSdkAsync();
+            var health = await _sdkService.CheckSuiteHealthAsync();
+            return Ok(new { success = ok, health });
         }
 
         [HttpPost("{sn}/start")]
         public IActionResult StartStream(string sn)
         {
             int ret = _deviceManager.StartMonitor(sn);
-            return Ok(new { success = true, ret });
+            var status = _screenMonitorService.GetStreamStatus(sn);
+            return Ok(new { success = (ret == 0), ret, status });
         }
 
         [HttpPost("{sn}/stop")]
         public IActionResult StopStream(string sn)
         {
             int ret = _deviceManager.StopMonitor(sn);
-            return Ok(new { success = true, ret });
+            var status = _screenMonitorService.GetStreamStatus(sn);
+            return Ok(new { success = true, ret, status });
         }
 
         [HttpGet("{sn}/frame")]
-        public IActionResult GetFrame(string sn)
+        public async Task<IActionResult> GetFrame(string sn)
         {
             Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
             Response.Headers.Append("Pragma", "no-cache");
@@ -46,23 +70,37 @@ namespace PicoManager.Server.Controllers
             if (frame == null || frame.Length == 0)
             {
                 var dev = _deviceManager.GetDevice(sn);
+                var streamStatus = _screenMonitorService.GetStreamStatus(sn);
+                var suiteStatus = await _sdkService.CheckSuiteHealthAsync();
+
                 frame = ScreenConverter.GeneratePlaceholderFrame(
                     sn,
                     dev?.DisplayName ?? sn,
                     dev?.AppTitle ?? "系统桌面",
                     dev?.Battery ?? 100,
-                    dev?.CurrentApp != null && dev.CurrentApp != "系统桌面");
+                    dev?.CurrentApp != null && dev.CurrentApp != "系统桌面",
+                    streamStatus,
+                    suiteStatus);
             }
 
             return File(frame, "image/jpeg");
         }
 
         [HttpGet("{sn}/status")]
-        public IActionResult GetStreamStatus(string sn)
+        public async Task<IActionResult> GetStreamStatus(string sn)
         {
             var frame = _screenMonitorService.GetLatestFrame(sn);
             bool hasReal = frame != null && frame.Length > 0;
-            return Ok(new { hasRealFrame = hasReal, length = frame?.Length ?? 0 });
+            var streamStatus = _screenMonitorService.GetStreamStatus(sn);
+            var suiteHealth = await _sdkService.CheckSuiteHealthAsync();
+
+            return Ok(new
+            {
+                hasRealFrame = hasReal,
+                length = frame?.Length ?? 0,
+                streamStatus,
+                suiteHealth
+            });
         }
 
         [HttpGet("{sn}/mjpeg")]
@@ -87,6 +125,9 @@ namespace PicoManager.Server.Controllers
                 return Task.CompletedTask;
             });
 
+            var suiteHealth = await _sdkService.CheckSuiteHealthAsync();
+            var streamStatus = _screenMonitorService.GetStreamStatus(sn);
+
             // Write initial frame immediately
             var initial = _screenMonitorService.GetLatestFrame(sn);
             if (initial != null)
@@ -101,7 +142,9 @@ namespace PicoManager.Server.Controllers
                     dev?.DisplayName ?? sn,
                     dev?.AppTitle ?? "系统桌面",
                     dev?.Battery ?? 100,
-                    dev?.CurrentApp != null && dev.CurrentApp != "系统桌面");
+                    dev?.CurrentApp != null && dev.CurrentApp != "系统桌面",
+                    streamStatus,
+                    suiteHealth);
                 channel.Writer.TryWrite(placeholder);
             }
 
@@ -128,12 +171,15 @@ namespace PicoManager.Server.Controllers
                     if (frame == null)
                     {
                         var dev = _deviceManager.GetDevice(sn);
+                        var curStatus = _screenMonitorService.GetStreamStatus(sn);
                         frame = _screenMonitorService.GetLatestFrame(sn) ?? ScreenConverter.GeneratePlaceholderFrame(
                             sn,
                             dev?.DisplayName ?? sn,
                             dev?.AppTitle ?? "系统桌面",
                             dev?.Battery ?? 100,
-                            dev?.CurrentApp != null && dev.CurrentApp != "系统桌面");
+                            dev?.CurrentApp != null && dev.CurrentApp != "系统桌面",
+                            curStatus,
+                            suiteHealth);
                     }
 
                     var header = $"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {frame.Length}\r\n\r\n";

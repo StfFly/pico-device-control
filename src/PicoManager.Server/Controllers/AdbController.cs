@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc;
 using PicoManager.Server.Services;
@@ -130,7 +133,7 @@ namespace PicoManager.Server.Controllers
         }
 
         [HttpPost("upload-install")]
-        [RequestSizeLimit(1024L * 1024L * 1024L * 4L)] // 4GB 大安装包支持
+        [RequestSizeLimit(1024L * 1024L * 1024L * 16L)] // 16GB 大安装包支持
         public async Task<IActionResult> UploadAndInstallApk(
             [FromForm] Microsoft.AspNetCore.Http.IFormFile? file,
             [FromForm] string? targets)
@@ -142,36 +145,92 @@ namespace PicoManager.Server.Controllers
                 return BadRequest(new { success = false, message = "仅支持 .apk 安装包格式" });
 
             var tempDir = Path.Combine(Path.GetTempPath(), "PicoManager_Apks");
-            Directory.CreateDirectory(tempDir);
-            var tempApk = Path.Combine(tempDir, $"{Guid.NewGuid():N}_{file.FileName}");
+            var sessionDir = Path.Combine(tempDir, Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(sessionDir);
+            // 物理文件名保留原始文件名，杜绝任何哈希污染
+            var tempApk = Path.Combine(sessionDir, file.FileName);
 
-            using (var fs = new FileStream(tempApk, FileMode.Create, FileAccess.Write, FileShare.None))
+            try
             {
-                await file.CopyToAsync(fs);
-            }
+                using (var fs = new FileStream(tempApk, FileMode.Create, FileAccess.Write, FileShare.None))
+                {
+                    await file.CopyToAsync(fs);
+                }
 
-            var targetList = ParseTargets(targets);
-            if (targetList.Count == 0)
-            {
-                var connected = await _adbService.GetConnectedDevicesAsync();
-                targetList = connected.Where(d => d.IsConnected).Select(d => d.Target).ToList();
+                var targetList = ParseTargets(targets);
+                if (targetList.Count == 0)
+                {
+                    var connected = await _adbService.GetConnectedDevicesAsync();
+                    targetList = connected.Where(d => d.IsConnected).Select(d => d.Target).ToList();
+                }
+
+                if (targetList.Count == 0)
+                {
+                    return BadRequest(new { success = false, message = "未检测到可安装的已连接 ADB 设备" });
+                }
+
+                // 采用 4 线程受控并发安装，杜绝串行耗时过长与网络拥塞
+                var results = new ConcurrentBag<object>();
+                using var sem = new SemaphoreSlim(4);
+                var installTasks = targetList.Select(async t =>
+                {
+                    await sem.WaitAsync();
+                    try
+                    {
+                        var (ok, msg) = await _adbService.InstallApkAsync(t, tempApk);
+                        results.Add(new { target = t, success = ok, message = msg });
+                    }
+                    finally
+                    {
+                        sem.Release();
+                    }
+                });
+
+                await Task.WhenAll(installTasks);
+                return Ok(new { success = true, total = targetList.Count, results = results.ToList() });
             }
+            finally
+            {
+                try { Directory.Delete(sessionDir, true); } catch { }
+            }
+        }
+
+        [HttpPost("local-install")]
+        public async Task<IActionResult> LocalInstallApk([FromBody] AdbLocalInstallRequest req)
+        {
+            if (string.IsNullOrWhiteSpace(req.LocalPath) || !System.IO.File.Exists(req.LocalPath))
+                return BadRequest(new { success = false, message = $"服务器本地 APK 文件不存在: {req.LocalPath}" });
+
+            if (!req.LocalPath.EndsWith(".apk", StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { success = false, message = "仅支持 .apk 安装包格式" });
+
+            var targetList = req.Targets != null && req.Targets.Count > 0
+                ? req.Targets
+                : (await _adbService.GetConnectedDevicesAsync()).Where(d => d.IsConnected).Select(d => d.Target).ToList();
 
             if (targetList.Count == 0)
             {
                 return BadRequest(new { success = false, message = "未检测到可安装的已连接 ADB 设备" });
             }
 
-            var results = new List<object>();
-            foreach (var t in targetList)
+            var results = new ConcurrentBag<object>();
+            using var sem = new SemaphoreSlim(4);
+            var installTasks = targetList.Select(async t =>
             {
-                var (ok, msg) = await _adbService.InstallApkAsync(t, tempApk);
-                results.Add(new { target = t, success = ok, message = msg });
-            }
+                await sem.WaitAsync();
+                try
+                {
+                    var (ok, msg) = await _adbService.InstallApkAsync(t, req.LocalPath);
+                    results.Add(new { target = t, success = ok, message = msg });
+                }
+                finally
+                {
+                    sem.Release();
+                }
+            });
 
-            try { System.IO.File.Delete(tempApk); } catch { }
-
-            return Ok(new { success = true, total = targetList.Count, results });
+            await Task.WhenAll(installTasks);
+            return Ok(new { success = true, total = targetList.Count, results = results.ToList() });
         }
 
         [HttpPost("uninstall")]
@@ -198,12 +257,13 @@ namespace PicoManager.Server.Controllers
         }
 
         [HttpPost("upload-push")]
-        [RequestSizeLimit(1024L * 1024L * 1024L * 4L)] // 4GB 支持
+        [RequestSizeLimit(1024L * 1024L * 1024L * 16L)] // 16GB 支持
         public async Task<IActionResult> UploadAndPush(
             [FromForm] Microsoft.AspNetCore.Http.IFormFile? file,
             [FromForm] string? remotePath,
             [FromForm] string? targets,
-            [FromForm] bool overwrite = true)
+            [FromForm] bool overwrite = true,
+            [FromForm] bool flatten = false)
         {
             if (file == null || file.Length == 0)
                 return BadRequest(new { success = false, message = "请先选择要上传的文件" });
@@ -212,60 +272,114 @@ namespace PicoManager.Server.Controllers
                 remotePath = "/sdcard/Download/";
 
             var tempDir = Path.Combine(Path.GetTempPath(), "PicoManager_Transfers");
-            Directory.CreateDirectory(tempDir);
-            var tempFile = Path.Combine(tempDir, $"{Guid.NewGuid():N}_{file.FileName}");
+            var sessionDir = Path.Combine(tempDir, Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(sessionDir);
+            // 物理文件名保留原始文件名，杜绝任何内存 GUID 哈希污染
+            var tempFile = Path.Combine(sessionDir, file.FileName);
 
-            using (var fs = new FileStream(tempFile, FileMode.Create, FileAccess.Write, FileShare.None))
+            try
             {
-                await file.CopyToAsync(fs);
-            }
-
-            string actualPushPath = tempFile;
-            string actualRemotePath = remotePath.Trim();
-
-            // 若上传的是 zip 压缩包且目标希望解压传输
-            bool isZip = file.FileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
-            string? unzipDir = null;
-            if (isZip)
-            {
-                unzipDir = Path.Combine(tempDir, $"{Guid.NewGuid():N}_unzipped");
-                try
+                using (var fs = new FileStream(tempFile, FileMode.Create, FileAccess.Write, FileShare.None))
                 {
-                    System.IO.Compression.ZipFile.ExtractToDirectory(tempFile, unzipDir, true);
-                    actualPushPath = unzipDir;
+                    await file.CopyToAsync(fs);
                 }
-                catch
-                {
-                    actualPushPath = tempFile;
-                }
-            }
 
-            var targetList = ParseTargets(targets);
-            if (targetList.Count == 0)
-            {
-                var connected = await _adbService.GetConnectedDevicesAsync();
-                targetList = connected.Where(d => d.IsConnected).Select(d => d.Target).ToList();
+                string actualPushPath = tempFile;
+                string actualRemotePath = AdbService.SanitizeShellArg(remotePath.Trim());
+
+                // 若上传的是 zip 压缩包且目标希望解压传输
+                bool isZip = file.FileName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase);
+                if (isZip)
+                {
+                    // 若不展开，使用 ZIP 文件名作为文件夹名称，避免在头显端生成莫名其妙的 "unzipped" 目录
+                    string zipStem = Path.GetFileNameWithoutExtension(file.FileName);
+                    if (string.IsNullOrWhiteSpace(zipStem)) zipStem = "Archive";
+                    var targetExtractDir = flatten ? Path.Combine(sessionDir, "unzipped") : Path.Combine(sessionDir, zipStem);
+
+                    try
+                    {
+                        SafeZipExtractor.ExtractToDirectorySafe(tempFile, targetExtractDir, true);
+                        actualPushPath = targetExtractDir;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[ADB] 解压 ZIP 失败或触发安全拦截: {ex.Message}，降级为原始压缩文件直接推送");
+                        actualPushPath = tempFile;
+                    }
+                }
+
+                var targetList = ParseTargets(targets);
+                if (targetList.Count == 0)
+                {
+                    var connected = await _adbService.GetConnectedDevicesAsync();
+                    targetList = connected.Where(d => d.IsConnected).Select(d => d.Target).ToList();
+                }
+
+                if (targetList.Count == 0)
+                {
+                    return BadRequest(new { success = false, message = "未检测到可推送的已连接 ADB 设备" });
+                }
+
+                var results = new ConcurrentBag<object>();
+                using var sem = new SemaphoreSlim(4);
+                var pushTasks = targetList.Select(async t =>
+                {
+                    await sem.WaitAsync();
+                    try
+                    {
+                        var (ok, msg) = await _adbService.PushFileOrFolderAsync(t, actualPushPath, actualRemotePath, overwrite, flatten: flatten);
+                        results.Add(new { target = t, success = ok, message = msg });
+                    }
+                    finally
+                    {
+                        sem.Release();
+                    }
+                });
+
+                await Task.WhenAll(pushTasks);
+                return Ok(new { success = true, total = targetList.Count, results = results.ToList() });
             }
+            finally
+            {
+                try { Directory.Delete(sessionDir, true); } catch { }
+            }
+        }
+
+        [HttpPost("local-push")]
+        public async Task<IActionResult> LocalPushFileOrFolder([FromBody] AdbLocalPushRequest req)
+        {
+            if (string.IsNullOrWhiteSpace(req.LocalPath) || (!System.IO.File.Exists(req.LocalPath) && !System.IO.Directory.Exists(req.LocalPath)))
+                return BadRequest(new { success = false, message = $"服务器本地路径不存在: {req.LocalPath}" });
+
+            string remotePath = string.IsNullOrWhiteSpace(req.RemotePath) ? "/sdcard/Download/" : req.RemotePath.Trim();
+
+            var targetList = req.Targets != null && req.Targets.Count > 0
+                ? req.Targets
+                : (await _adbService.GetConnectedDevicesAsync()).Where(d => d.IsConnected).Select(d => d.Target).ToList();
 
             if (targetList.Count == 0)
             {
                 return BadRequest(new { success = false, message = "未检测到可推送的已连接 ADB 设备" });
             }
 
-            var results = new List<object>();
-            foreach (var t in targetList)
+            var results = new ConcurrentBag<object>();
+            using var sem = new SemaphoreSlim(4);
+            var pushTasks = targetList.Select(async t =>
             {
-                var (ok, msg) = await _adbService.PushFileOrFolderAsync(t, actualPushPath, actualRemotePath, overwrite);
-                results.Add(new { target = t, success = ok, message = msg });
-            }
+                await sem.WaitAsync();
+                try
+                {
+                    var (ok, msg) = await _adbService.PushFileOrFolderAsync(t, req.LocalPath, remotePath, req.Overwrite, flatten: req.Flatten);
+                    results.Add(new { target = t, success = ok, message = msg });
+                }
+                finally
+                {
+                    sem.Release();
+                }
+            });
 
-            try { System.IO.File.Delete(tempFile); } catch { }
-            if (unzipDir != null && Directory.Exists(unzipDir))
-            {
-                try { Directory.Delete(unzipDir, true); } catch { }
-            }
-
-            return Ok(new { success = true, total = targetList.Count, results });
+            await Task.WhenAll(pushTasks);
+            return Ok(new { success = true, total = targetList.Count, results = results.ToList() });
         }
 
         [HttpPost("mkdir")]
@@ -303,11 +417,26 @@ namespace PicoManager.Server.Controllers
         {
             if (string.IsNullOrWhiteSpace(targets)) return new List<string>();
             return targets.Split(new[] { ',', ';', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
-                .Select(t => t.Trim())
+                .Select(t => AdbService.SanitizeShellArg(t.Trim()))
                 .Where(t => !string.IsNullOrEmpty(t))
                 .Distinct()
                 .ToList();
         }
+    }
+
+    public class AdbLocalInstallRequest
+    {
+        public string LocalPath { get; set; } = string.Empty;
+        public List<string>? Targets { get; set; }
+    }
+
+    public class AdbLocalPushRequest
+    {
+        public string LocalPath { get; set; } = string.Empty;
+        public string? RemotePath { get; set; }
+        public List<string>? Targets { get; set; }
+        public bool Overwrite { get; set; } = true;
+        public bool Flatten { get; set; } = false;
     }
 
     public class AdbMkdirRequest

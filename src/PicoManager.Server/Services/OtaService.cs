@@ -57,10 +57,10 @@ namespace PicoManager.Server.Services
                     await zipStream.CopyToAsync(fs);
                 }
 
-                _logger.LogInformation("[OTA] 接收到更新包，大小: {Length} 字节，正在解压校验...", new FileInfo(tempZip).Length);
+                _logger.LogInformation("[OTA] 接收到更新包，大小: {Length} 字节，正在安全解压校验...", new FileInfo(tempZip).Length);
 
-                // 解压更新包
-                ZipFile.ExtractToDirectory(tempZip, extractedDir, true);
+                // 使用 SafeZipExtractor 安全解压更新包，防御 Zip Slip
+                SafeZipExtractor.ExtractToDirectorySafe(tempZip, extractedDir, true);
 
                 // 智能定位有效更新目录：优先寻找包含 PicoManager.Server.dll 的目录
                 var dllFiles = Directory.GetFiles(extractedDir, "PicoManager.Server.dll", SearchOption.AllDirectories);
@@ -91,7 +91,17 @@ namespace PicoManager.Server.Services
                 batContent.AppendLine("timeout /t 1 /nobreak >nul");
                 batContent.AppendLine("taskkill /F /IM PicoManager.Server.exe >nul 2>nul");
                 batContent.AppendLine("timeout /t 2 /nobreak >nul");
-                batContent.AppendLine($"robocopy \"{cleanExtractedDir}\" \"{cleanBaseDir}\" /E /R:5 /W:1 /XF config.json _apply_ota.bat /XD _ota_staging logs /NFL /NDL /NJH /NJS >nul");
+                batContent.AppendLine("REM 1. 强力备份现有配置文件，杜绝更新丢失用户自定义游戏与机位别名");
+                batContent.AppendLine($"if exist \"{cleanBaseDir}\\config.json\" copy /Y \"{cleanBaseDir}\\config.json\" \"{cleanBaseDir}\\config.json.user_backup\" >nul");
+                batContent.AppendLine($"if exist \"{cleanBaseDir}\\..\\config.json\" copy /Y \"{cleanBaseDir}\\..\\config.json\" \"{cleanBaseDir}\\..\\config.json.user_backup\" >nul");
+                batContent.AppendLine("REM 2. 从更新临时源彻底删除默认 config.json，杜绝源头覆盖");
+                batContent.AppendLine($"if exist \"{cleanExtractedDir}\\config.json\" del /F /Q \"{cleanExtractedDir}\\config.json\" >nul");
+                batContent.AppendLine($"if exist \"{cleanExtractedDir}\\server\\config.json\" del /F /Q \"{cleanExtractedDir}\\server\\config.json\" >nul");
+                batContent.AppendLine("REM 3. 执行热替换");
+                batContent.AppendLine($"robocopy \"{cleanExtractedDir}\" \"{cleanBaseDir}\" /E /R:5 /W:1 /XF config.json config.json.bak config.json.tmp config.json.user_backup _apply_ota.bat /XD _ota_staging logs /NFL /NDL /NJH /NJS >nul");
+                batContent.AppendLine("REM 4. 强制还原用户原始配置");
+                batContent.AppendLine($"if exist \"{cleanBaseDir}\\config.json.user_backup\" copy /Y \"{cleanBaseDir}\\config.json.user_backup\" \"{cleanBaseDir}\\config.json\" >nul");
+                batContent.AppendLine($"if exist \"{cleanBaseDir}\\..\\config.json.user_backup\" copy /Y \"{cleanBaseDir}\\..\\config.json.user_backup\" \"{cleanBaseDir}\\..\\config.json\" >nul");
                 batContent.AppendLine("echo [PICO OTA] 文件热替换完毕，正在启动最新版本服务...");
                 batContent.AppendLine($"start \"\" \"{Path.Combine(cleanBaseDir, "PicoManager.Server.exe")}\"");
                 batContent.AppendLine("timeout /t 2 /nobreak >nul");

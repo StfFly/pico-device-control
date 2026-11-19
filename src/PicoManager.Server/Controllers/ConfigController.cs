@@ -74,6 +74,52 @@ namespace PicoManager.Server.Controllers
             return NotFound(new { message = "项目不存在" });
         }
 
+        [HttpPost("groups")]
+        public IActionResult SaveGroup([FromBody] DeviceGroup group)
+        {
+            if (string.IsNullOrWhiteSpace(group.Name))
+            {
+                return BadRequest(new { message = "分组名称不能为空" });
+            }
+
+            var config = _configService.CurrentConfig;
+            if (string.IsNullOrWhiteSpace(group.Id))
+            {
+                group.Id = "group-" + Guid.NewGuid().ToString("N")[..8];
+                config.Groups.Add(group);
+            }
+            else
+            {
+                var existing = config.Groups.FirstOrDefault(g => g.Id == group.Id);
+                if (existing != null)
+                {
+                    existing.Name = group.Name.Trim();
+                    existing.DefaultProjectId = group.DefaultProjectId?.Trim() ?? string.Empty;
+                    existing.DeviceIdentifiers = group.DeviceIdentifiers ?? new List<string>();
+                }
+                else
+                {
+                    config.Groups.Add(group);
+                }
+            }
+
+            _configService.SaveConfig();
+            return Ok(new { success = true, group });
+        }
+
+        [HttpDelete("groups/{id}")]
+        public IActionResult DeleteGroup(string id)
+        {
+            var config = _configService.CurrentConfig;
+            int removed = config.Groups.RemoveAll(g => g.Id == id);
+            if (removed > 0)
+            {
+                _configService.SaveConfig();
+                return Ok(new { success = true });
+            }
+            return NotFound(new { message = "分组不存在" });
+        }
+
         [HttpPost("alias")]
         public IActionResult SetAlias([FromBody] SetAliasRequest req)
         {

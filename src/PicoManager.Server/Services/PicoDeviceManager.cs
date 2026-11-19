@@ -262,15 +262,13 @@ namespace PicoManager.Server.Services
                 {
                     SN = s,
                     Alias = configuredAlias == s ? "" : configuredAlias,
-                    Online = true,
+                    Online = false, // 严格默认为离线，杜绝未开机被假激活
                     IsDemo = false,
-                    LastSeen = DateTime.UtcNow
+                    LastSeen = DateTime.MinValue
                 };
             });
 
-            dev.Online = true;
             dev.IsDemo = false;
-            dev.LastSeen = DateTime.UtcNow;
 
             updateAction?.Invoke(dev);
 
@@ -284,6 +282,15 @@ namespace PicoManager.Server.Services
             }
 
             return dev;
+        }
+
+        public void SetDeviceOnline(string sn)
+        {
+            AddOrUpdateDevice(sn, d =>
+            {
+                d.Online = true;
+                d.LastSeen = DateTime.UtcNow;
+            });
         }
 
         public void MarkDeviceOffline(string sn)
@@ -302,6 +309,10 @@ namespace PicoManager.Server.Services
             AddOrUpdateDevice(sn, d =>
             {
                 d.Battery = battery;
+                if (battery > 0 && d.Online)
+                {
+                    d.LastSeen = DateTime.UtcNow;
+                }
             });
         }
 
@@ -589,17 +600,6 @@ namespace PicoManager.Server.Services
                 ret = PXREAOpenApi.RestartDevice(sn);
             }
             MarkDeviceOffline(sn);
-
-            // 若在测试/模拟环境下，4秒后自动唤醒回桌面，方便反复调试
-            if (!_sdkActive || sn.StartsWith("P4E-88"))
-            {
-                _ = Task.Run(async () =>
-                {
-                    await Task.Delay(4000);
-                    AddOrUpdateDevice(sn, d => { d.Online = true; d.CurrentApp = "系统桌面"; d.AppTitle = "系统桌面"; });
-                });
-            }
-
             return ret;
         }
 
@@ -611,17 +611,6 @@ namespace PicoManager.Server.Services
                 ret = PXREAOpenApi.ShutDownDevice(sn);
             }
             MarkDeviceOffline(sn);
-
-            // 若在测试/模拟环境下，6秒后自动唤醒，避免关机后死机
-            if (!_sdkActive || sn.StartsWith("P4E-88"))
-            {
-                _ = Task.Run(async () =>
-                {
-                    await Task.Delay(6000);
-                    AddOrUpdateDevice(sn, d => { d.Online = true; d.CurrentApp = "系统桌面"; d.AppTitle = "系统桌面"; });
-                });
-            }
-
             return ret;
         }
 
@@ -645,13 +634,13 @@ namespace PicoManager.Server.Services
             {
                 try
                 {
-                    PXREAOpenApi.LockDevice(sn);
+                    // 绝不在点亮屏幕时调用 LockDevice！直接下发官方屏幕控制
                     ret = PXREAOpenApi.SetScreenState(sn, screenOn ? 1 : 0);
                 }
                 catch { }
             }
 
-            // ADB 底层双保障
+            // ADB 底层双保障唤醒/休眠
             try
             {
                 await _adbService.SetScreenStateAsync(sn, screenOn);
@@ -664,13 +653,11 @@ namespace PicoManager.Server.Services
 
         public async Task<int> BatchSetScreenStateAsync(List<string> snList, bool screenOn)
         {
-            int count = 0;
-            foreach (var sn in snList)
-            {
-                await SetScreenStateAsync(sn, screenOn);
-                count++;
-            }
-            return count;
+            if (snList == null || snList.Count == 0) return 0;
+            // 并发下发，秒级响应所有设备
+            var tasks = snList.Select(sn => SetScreenStateAsync(sn, screenOn));
+            await Task.WhenAll(tasks);
+            return snList.Count;
         }
 
         public void UnbindHeadset(string sn)
@@ -691,15 +678,33 @@ namespace PicoManager.Server.Services
             int ret = 0;
             if (_sdkActive)
             {
-                // 官方 PICO Business Suite SDK 核心标准接口: StartMonitor
-                ret = PXREAOpenApi.StartMonitor(sn);
-                Console.WriteLine($"[PICO SDK] 启动设备监控流 SN: {sn}, ret={ret}");
+                // 官方 PICO Business Suite 最新标准接口: StartMonitorScreen (对应底层 startMonitorScreenSDK)
+                ret = PXREAOpenApi.StartMonitorScreen(sn, PXREAMonitorQuality.Quality480P);
+                Console.WriteLine($"[PICO SDK] 启动设备现代屏幕监控流 StartMonitorScreen(480P) SN: {sn}, ret={ret}");
                 if (ret != 0)
                 {
-                    // 兼容扩展多路监控模式
-                    ret = PXREAOpenApi.StartMonitorScreen(sn, PXREAMonitorQuality.Quality480P);
+                    // 兼容旧版企业套件 StartMonitor
+                    int retLegacy = PXREAOpenApi.StartMonitor(sn);
+                    Console.WriteLine($"[PICO SDK] 备用调用 StartMonitor SN: {sn}, ret={retLegacy}");
+                    ret = retLegacy;
+                }
+
+                if (ret == 0)
+                {
+                    _screenMonitorService.RecordStartRequested(sn, 0, "监看指令已下发，等待头显 ByteRTC 推流响应...", StreamPhase.WaitingFirstFrame);
+                }
+                else
+                {
+                    _screenMonitorService.RecordStartRequested(sn, ret, $"StartMonitorScreen 返回错误码 {ret}，官方套件未就绪或设备未响应", StreamPhase.Error);
                 }
             }
+            else
+            {
+                ret = -1;
+                Console.WriteLine($"[PICO SDK] 启动监控流失败: PICO SDK 未激活 (官方套件 127.0.0.1:60061 未连接)");
+                _screenMonitorService.RecordStartRequested(sn, -1, "官方企业应用套件未连接 (60061 端口不可达，请启动并登录套件)", StreamPhase.SuiteOffline);
+            }
+
             AddOrUpdateDevice(sn, d => d.IsStreaming = true);
             return ret;
         }
@@ -709,10 +714,11 @@ namespace PicoManager.Server.Services
             int ret = 0;
             if (_sdkActive)
             {
-                ret = PXREAOpenApi.StopMonitor(sn);
-                try { PXREAOpenApi.StopMonitorScreen(sn); } catch { }
+                ret = PXREAOpenApi.StopMonitorScreen(sn);
+                try { PXREAOpenApi.StopMonitor(sn); } catch { }
                 Console.WriteLine($"[PICO SDK] 停止设备监控流 SN: {sn}, ret={ret}");
             }
+            _screenMonitorService.RecordStopRequested(sn);
             AddOrUpdateDevice(sn, d => d.IsStreaming = false);
             return ret;
         }

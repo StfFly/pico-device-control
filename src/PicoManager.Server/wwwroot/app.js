@@ -1,5 +1,32 @@
 // ======================== PicoManager 运营工作台 前端交互逻辑 ========================
 
+// 多环境 API 基础路径兼容 (标准 Web 浏览器 / Tauri 桌面客户端)
+const API_BASE = (window.location.protocol === 'tauri:' || window.location.protocol === 'asset:' || window.location.hostname === 'tauri.localhost')
+  ? 'http://localhost:8999'
+  : '';
+
+function apiUrl(path) {
+  if (path && path.startsWith('/') && API_BASE) {
+    return API_BASE + path;
+  }
+  return path;
+}
+
+if (API_BASE) {
+  const originalFetch = window.fetch;
+  window.fetch = function(url, init) {
+    if (typeof url === 'string' && url.startsWith('/')) {
+      url = API_BASE + url;
+    }
+    return originalFetch(url, init);
+  };
+}
+
+function safeSetText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.innerText = text;
+}
+
 // 全局状态
 let devices = new Map();
 let projects = [];
@@ -67,11 +94,20 @@ window.addEventListener('DOMContentLoaded', async () => {
   await loadConfig();
   await loadDevices();
   initSignalR();
+  // 保障性心跳巡检：每 2.5 秒兜底同步一次真机状态，杜绝任何长连接意外导致的界面留白或漏更
+  setInterval(loadDevices, 2500);
+  setInterval(loadConfig, 15000);
   startCanvasSimulation();
+  checkSuiteHealthBackground();
+  setInterval(checkSuiteHealthBackground, 5000);
 });
 
 // ======================== 1. SignalR 实时长连接 ========================
 function initSignalR() {
+  startSignalR();
+}
+
+function startSignalR() {
   const statusPill = document.getElementById('system-status-pill');
   const statusText = document.getElementById('system-status-text');
 
@@ -79,14 +115,17 @@ function initSignalR() {
     console.warn('SignalR 客户端库未加载，自动降级至 HTTP 轮询模式');
     if (statusPill && statusText) {
       statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-medium flex items-center gap-1';
-      statusText.innerText = 'HTTP 轮询模式 (纯离线)';
+      statusText.innerText = 'HTTP 轮询模式';
     }
-    setInterval(loadDevices, 3000);
+    return;
+  }
+
+  if (hubConnection && (hubConnection.state === signalR.HubConnectionState.Connected || hubConnection.state === signalR.HubConnectionState.Connecting)) {
     return;
   }
 
   hubConnection = new signalR.HubConnectionBuilder()
-    .withUrl('/hubs/pico')
+    .withUrl(apiUrl('/hubs/pico'))
     .withAutomaticReconnect([0, 2000, 5000, 10000, 30000])
     .build();
 
@@ -121,35 +160,50 @@ function initSignalR() {
   });
 
   hubConnection.onreconnecting(() => {
-    statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-medium flex items-center gap-1';
-    statusText.innerText = '长连接重新连接中...';
+    if (statusPill && statusText) {
+      statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-medium flex items-center gap-1';
+      statusText.innerText = '长连接重新连接中...';
+    }
   });
 
   hubConnection.onreconnected(() => {
-    statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200 font-medium flex items-center gap-1';
-    statusText.innerText = '系统服务在线';
+    if (statusPill && statusText) {
+      statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200 font-medium flex items-center gap-1';
+      statusText.innerText = '系统服务在线';
+    }
     loadDevices();
   });
 
   hubConnection.onclose(() => {
-    statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-rose-50 text-rose-600 border border-rose-200 font-medium flex items-center gap-1';
-    statusText.innerText = '服务已断开，尝试重连...';
-    setTimeout(() => initSignalR(), 3000);
+    if (statusPill && statusText) {
+      statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-rose-50 text-rose-600 border border-rose-200 font-medium flex items-center gap-1';
+      statusText.innerText = '服务已断开，尝试重连...';
+    }
+    setTimeout(() => startSignalR(), 3000);
   });
 
   hubConnection.start()
     .then(() => {
-      statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200 font-medium flex items-center gap-1';
-      statusText.innerText = '系统服务在线 (端口 8999)';
+      if (statusPill && statusText) {
+        statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200 font-medium flex items-center gap-1';
+        statusText.innerText = '系统服务在线 (端口 8999)';
+      }
+      loadDevices();
     })
     .catch(err => {
       console.warn('SignalR start error:', err);
-      statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-medium flex items-center gap-1';
-      statusText.innerText = 'HTTP 轮询模式';
+      if (statusPill && statusText) {
+        statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-medium flex items-center gap-1';
+        statusText.innerText = 'HTTP 轮询模式';
+      }
+      loadDevices();
+      setTimeout(() => startSignalR(), 5000);
     });
 }
 
 // ======================== 2. 数据拉取与渲染 ========================
+let currentActiveGroupId = 'all';
+
 async function loadConfig() {
   try {
     const res = await fetch('/api/config');
@@ -158,6 +212,8 @@ async function loadConfig() {
       systemConfig = cfg;
       projects = cfg.projects || [];
       renderProjects();
+      renderGroupTabs();
+      updateGroupQuickSelectButton();
     }
   } catch (e) {
     console.error('loadConfig error:', e);
@@ -171,8 +227,10 @@ async function loadDevices() {
       const devList = await res.json();
       devices.clear();
       devList.forEach(d => devices.set(d.sn, d));
+      renderGroupTabs();
       renderMatrix();
       updateTopStats();
+      updateGroupQuickSelectButton();
 
       if (!currentMonitorSn && devList.length > 0) {
         selectMonitorDevice(devList[0].sn);
@@ -217,7 +275,12 @@ function renderProjects() {
           <span class="text-[10px] px-1.5 py-0.2 rounded font-semibold ${isSelected ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'}">
             ${isSelected ? '当前选定' : proj.type === 'vr_video' ? '全景视频' : 'VR应用'}
           </span>
-          <span class="text-[11px] font-mono ${isSelected ? 'text-blue-700 font-bold' : 'text-slate-500 font-medium'}">${proj.durationMinutes} 分钟</span>
+          <div class="flex items-center gap-1.5">
+            <span class="text-[11px] font-mono ${isSelected ? 'text-blue-700 font-bold' : 'text-slate-500 font-medium'}">${proj.durationMinutes} 分钟</span>
+            <button onclick="event.stopPropagation(); openEditProjectFromCard('${proj.id}')" title="修改此项目包名/名称/时长" class="w-5 h-5 rounded hover:bg-blue-100 text-slate-400 hover:text-blue-700 flex items-center justify-center text-xs transition" style="pointer-events: auto;">
+              ✏️
+            </button>
+          </div>
         </div>
         <h3 class="font-bold text-sm text-slate-900 truncate mt-0.5">${proj.name}</h3>
         <p class="text-[11px] text-slate-400 font-mono truncate" title="${proj.packageName}">${proj.packageName}</p>
@@ -236,28 +299,145 @@ function selectProject(projId) {
   }
 }
 
-// 渲染第二步：设备矩阵
-function renderMatrix() {
-  const matrix = document.getElementById('device-matrix');
-  matrix.innerHTML = '';
+function openEditProjectFromCard(projId) {
+  playSound('click');
+  openConfigModal('app');
+  setTimeout(() => {
+    openEditProjectForm(projId);
+  }, 100);
+}
 
-  const devArray = Array.from(devices.values()).sort((a, b) => {
+function getActiveGroupFilteredDevices() {
+  const allDevs = Array.from(devices.values()).sort((a, b) => {
     const numA = parseInt(a.alias.replace(/\D/g, '')) || 999;
     const numB = parseInt(b.alias.replace(/\D/g, '')) || 999;
     return numA - numB;
   });
 
+  if (currentActiveGroupId === 'all' || !systemConfig || !systemConfig.groups) {
+    return allDevs;
+  }
+
+  const grp = systemConfig.groups.find(g => g.id === currentActiveGroupId);
+  if (!grp || !grp.deviceIdentifiers || grp.deviceIdentifiers.length === 0) {
+    return [];
+  }
+
+  const idSet = new Set(grp.deviceIdentifiers.map(i => i.toLowerCase().trim()));
+  return allDevs.filter(d => {
+    const sn = (d.sn || '').toLowerCase().trim();
+    const alias = (d.alias || '').toLowerCase().trim();
+    const digits = alias.replace(/\D/g, '');
+    return idSet.has(sn) || idSet.has(alias) || (digits && idSet.has(digits));
+  });
+}
+
+function renderGroupTabs() {
+  const container = document.getElementById('device-group-tabs');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const groups = systemConfig?.groups || [];
+  const totalCount = devices.size;
+
+  // 1. 全部设备 Tab
+  const isAll = currentActiveGroupId === 'all';
+  const allBtn = document.createElement('button');
+  allBtn.className = `px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 min-h-[36px] ${
+    isAll
+      ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
+      : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+  }`;
+  allBtn.innerHTML = `<span>🌐</span> 全部设备 <span class="px-1.5 py-0.2 rounded-full text-[10px] ${isAll ? 'bg-blue-700/80 text-white' : 'bg-slate-200 text-slate-600'} font-mono">${totalCount}</span>`;
+  allBtn.onclick = () => selectGroupTab('all');
+  container.appendChild(allBtn);
+
+  // 2. 自定义分组 Tabs
+  groups.forEach(g => {
+    const isActive = currentActiveGroupId === g.id;
+    const idSet = new Set((g.deviceIdentifiers || []).map(i => i.toLowerCase().trim()));
+    const matchingCount = Array.from(devices.values()).filter(d => {
+      const sn = (d.sn || '').toLowerCase().trim();
+      const alias = (d.alias || '').toLowerCase().trim();
+      const digits = alias.replace(/\D/g, '');
+      return idSet.has(sn) || idSet.has(alias) || (digits && idSet.has(digits));
+    }).length;
+
+    const btn = document.createElement('button');
+    btn.className = `px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 min-h-[36px] ${
+      isActive
+        ? 'bg-blue-600 text-white shadow-md shadow-blue-500/20'
+        : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+    }`;
+    btn.innerHTML = `<span>🏷️</span> ${escapeHtml(g.name)} <span class="px-1.5 py-0.2 rounded-full text-[10px] ${isActive ? 'bg-blue-700/80 text-white' : 'bg-slate-200 text-slate-600'} font-mono">${matchingCount}</span>`;
+    btn.onclick = () => selectGroupTab(g.id);
+    container.appendChild(btn);
+  });
+}
+
+function selectGroupTab(groupId) {
+  playSound('click');
+  currentActiveGroupId = groupId;
+  renderGroupTabs();
+  renderMatrix();
+  updateGroupQuickSelectButton();
+
+  // 若切换到了某个具体分组，且该分组配置了默认游戏，联动自动高亮选中该游戏卡片
+  if (groupId !== 'all') {
+    const grp = (systemConfig?.groups || []).find(g => g.id === groupId);
+    if (grp && grp.defaultProjectId) {
+      const proj = projects.find(p => p.id === grp.defaultProjectId || p.packageName === grp.defaultProjectId);
+      if (proj) {
+        selectProject(proj.id);
+        showToast(`已切换至【${grp.name}】并联动选中预设游戏: ${proj.name}`, '🎮');
+      }
+    }
+  }
+}
+
+function selectCurrentGroup() {
+  const currentDevs = getActiveGroupFilteredDevices().filter(d => d.online);
+  currentDevs.forEach(d => selectedSns.add(d.sn));
+  renderMatrix();
+  playSound('beep');
+  showToast(`已选中当前分组内 ${currentDevs.length} 台在线头戴`, '🎯');
+}
+
+function updateGroupQuickSelectButton() {
+  const btn = document.getElementById('btn-select-group');
+  const countEl = document.getElementById('btn-total-group');
+  if (!btn || !countEl) return;
+
+  if (currentActiveGroupId === 'all') {
+    btn.classList.add('hidden');
+  } else {
+    btn.classList.remove('hidden');
+    const grp = (systemConfig?.groups || []).find(g => g.id === currentActiveGroupId);
+    const devs = getActiveGroupFilteredDevices().filter(d => d.online);
+    countEl.innerText = devs.length;
+    btn.title = `一键选中【${grp ? grp.name : '本组'}】所有在线设备`;
+  }
+}
+
+// 渲染第二步：设备矩阵
+function renderMatrix() {
+  const matrix = document.getElementById('device-matrix');
+  matrix.innerHTML = '';
+
+  const devArray = getActiveGroupFilteredDevices();
+
   if (devArray.length === 0) {
+    const isGroup = currentActiveGroupId !== 'all';
     matrix.innerHTML = `
       <div class="col-span-full py-12 flex flex-col items-center justify-center text-center p-6 bg-white border-2 border-dashed border-slate-200 rounded-2xl">
         <div class="w-14 h-14 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center text-2xl mb-3 shadow-inner">
-          👓
+          ${isGroup ? '🏷️' : '👓'}
         </div>
-        <h3 class="text-sm font-bold text-slate-800">等待真实 PICO 头显连入局域网...</h3>
+        <h3 class="text-sm font-bold text-slate-800">${isGroup ? '当前分组内暂未勾选分配设备' : '等待真实 PICO 头显连入局域网...'}</h3>
         <p class="text-xs text-slate-500 max-w-md mt-1.5 leading-relaxed">
-          1. 确保本电脑已启动 <b>PICO Business Suite (官方企业套件)</b> 并登录<br/>
-          2. 将 PICO 头戴开机并连接同一店内 Wi-Fi (建议 5GHz 无 AP 隔离)<br/>
-          3. 可在右上角「绑定头显」预设机器编号与 SN 码，开机后自动点亮
+          ${isGroup
+            ? '请点击上方「⚙️ 管理分组」将头显设备勾选分配至此分组。'
+            : '1. 确保本电脑已启动 <b>PICO Business Suite (官方企业套件)</b> 并登录<br/>2. 将 PICO 头戴开机并连接同一店内 Wi-Fi (建议 5GHz 无 AP 隔离)<br/>3. 可在右上角「绑定头显」预设机器编号与 SN 码，开机后自动点亮'}
         </p>
       </div>
     `;
@@ -386,23 +566,32 @@ function updateTopStats() {
   const offline = all.filter(d => !d.online).length;
   const lowDevs = all.filter(d => d.online && d.battery > 0 && d.battery <= 30);
 
-  document.getElementById('stat-total').innerText = all.length;
-  document.getElementById('stat-idle').innerText = idle;
-  document.getElementById('stat-running').innerText = running;
-  document.getElementById('stat-offline').innerText = offline;
-  document.getElementById('stat-low').innerText = lowDevs.length;
+  safeSetText('stat-total', all.length);
+  safeSetText('stat-idle', idle);
+  safeSetText('stat-running', running);
+  safeSetText('stat-offline', offline);
+  safeSetText('stat-low', lowDevs.length);
 
-  document.getElementById('btn-total-online').innerText = idle + running;
-  document.getElementById('btn-total-idle').innerText = idle;
-  document.getElementById('btn-total-running').innerText = running;
+  // 兼容其他模板/别名 ID
+  safeSetText('top-stat-total', all.length);
+  safeSetText('top-stat-online', idle + running);
+  safeSetText('top-stat-idle', idle);
+  safeSetText('top-stat-running', running);
+  safeSetText('top-stat-offline', offline);
+
+  safeSetText('btn-total-online', idle + running);
+  safeSetText('btn-total-idle', idle);
+  safeSetText('btn-total-running', running);
 
   const lowAlert = document.getElementById('low-battery-alert');
-  if (lowDevs.length > 0) {
-    const names = lowDevs.map(d => '#' + d.displayName).join('、');
-    document.getElementById('low-battery-names').innerText = names;
-    lowAlert.classList.remove('hidden');
-  } else {
-    lowAlert.classList.add('hidden');
+  if (lowAlert) {
+    if (lowDevs.length > 0) {
+      const names = lowDevs.map(d => '#' + d.displayName).join('、');
+      safeSetText('low-battery-names', names);
+      lowAlert.classList.remove('hidden');
+    } else {
+      lowAlert.classList.add('hidden');
+    }
   }
 }
 
@@ -520,6 +709,101 @@ function refreshMonitorTelemetry(dev) {
 
 let snapshotTimer = null;
 
+let streamStatusPollTimer = null;
+let lastKnownSuiteHealth = null;
+
+async function checkSuiteHealthBackground() {
+  try {
+    const res = await fetch('/api/stream/suite-status');
+    if (res.ok) {
+      lastKnownSuiteHealth = await res.json();
+      updateSuiteLinkIndicator(lastKnownSuiteHealth);
+    }
+  } catch (e) { }
+}
+
+function updateSuiteLinkIndicator(health) {
+  const el = document.getElementById('suite-link-indicator');
+  if (!el) return;
+  if (!health) {
+    el.innerText = '套件: 未知';
+    el.className = 'text-slate-400 font-mono text-[9px]';
+    return;
+  }
+  if (!health.isProcessRunning) {
+    el.innerText = '🔴 官方套件未运行';
+    el.className = 'text-rose-400 font-mono text-[9px] cursor-pointer hover:underline';
+    el.title = '未检测到 PICOBusinessSuite.exe，点击查看诊断';
+  } else if (!health.isPortOpen) {
+    el.innerText = '🟡 套件未登录 (60061未开放)';
+    el.className = 'text-amber-400 font-mono text-[9px] cursor-pointer hover:underline';
+    el.title = '套件已运行但未登录，点击查看诊断';
+  } else if (!health.isSdkActive) {
+    el.innerText = '🟡 SDK 握手中...';
+    el.className = 'text-amber-300 font-mono text-[9px] cursor-pointer hover:underline';
+    el.title = '正在与官方套件建立 gRPC 连接';
+  } else {
+    el.innerText = '🟢 套件服务(60061)就绪';
+    el.className = 'text-emerald-400 font-mono text-[9px] cursor-pointer hover:underline';
+    el.title = '链路正常，支持实时屏幕监控';
+  }
+}
+
+function startStreamStatusPolling(sn) {
+  stopStreamStatusPolling();
+  streamStatusPollTimer = setInterval(async () => {
+    if (!isStreamingActive || currentMonitorSn !== sn) {
+      stopStreamStatusPolling();
+      return;
+    }
+    try {
+      const res = await fetch(`/api/stream/${sn}/status`);
+      if (res.ok) {
+        const data = await res.json();
+        updateStreamStatusPill(data.streamStatus, data.suiteHealth, data.hasRealFrame);
+        if (data.suiteHealth) {
+          updateSuiteLinkIndicator(data.suiteHealth);
+        }
+      }
+    } catch (e) { }
+  }, 1200);
+}
+
+function stopStreamStatusPolling() {
+  if (streamStatusPollTimer) {
+    clearInterval(streamStatusPollTimer);
+    streamStatusPollTimer = null;
+  }
+}
+
+function updateStreamStatusPill(status, health, hasRealFrame) {
+  const textEl = document.getElementById('stream-status-text');
+  const dotEl = document.getElementById('stream-status-dot');
+  const pillEl = document.getElementById('stream-status-pill');
+  if (!textEl || !dotEl || !pillEl) return;
+
+  if (health && !health.isPortOpen) {
+    textEl.innerText = '⚠️ 官方套件未就绪 (60061离线)';
+    dotEl.className = 'w-1.5 h-1.5 rounded-full bg-rose-500';
+    pillEl.className = 'bg-black/85 backdrop-blur px-2.5 py-1 rounded-md text-[10px] font-mono text-rose-400 flex items-center gap-1.5 shadow pointer-events-auto cursor-pointer border border-rose-500/40 hover:border-rose-400 transition';
+    return;
+  }
+
+  if (hasRealFrame || status?.phase === 'Streaming' || status?.phase === 4) {
+    textEl.innerText = `LIVE 实时传输中 (${status?.lastWidth || 854}x${status?.lastHeight || 480})`;
+    dotEl.className = 'w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping';
+    pillEl.className = 'bg-black/75 backdrop-blur px-2.5 py-1 rounded-md text-[10px] font-mono text-emerald-400 flex items-center gap-1.5 shadow pointer-events-auto cursor-pointer border border-emerald-500/30 hover:border-emerald-400 transition';
+  } else if (status?.phase === 'WaitingFirstFrame' || status?.phase === 3) {
+    textEl.innerText = '⏳ 等待头显推流响应...';
+    dotEl.className = 'w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping';
+    pillEl.className = 'bg-black/85 backdrop-blur px-2.5 py-1 rounded-md text-[10px] font-mono text-amber-300 flex items-center gap-1.5 shadow pointer-events-auto cursor-pointer border border-amber-500/40 hover:border-amber-400 transition';
+  } else if (status?.phase === 'Error' || status?.phase === 5) {
+    textEl.innerText = '❌ 监看请求异常';
+    dotEl.className = 'w-1.5 h-1.5 rounded-full bg-rose-500';
+    pillEl.className = 'bg-black/85 backdrop-blur px-2.5 py-1 rounded-md text-[10px] font-mono text-rose-400 flex items-center gap-1.5 shadow pointer-events-auto cursor-pointer border border-rose-500/40 hover:border-rose-400 transition';
+  }
+}
+
 // 用户手动切换实时画面拉流 (按需开启，省流模式)
 async function toggleLiveStream() {
   if (!currentMonitorSn) return;
@@ -537,6 +821,18 @@ async function toggleLiveStream() {
   const canvas = document.getElementById('side-monitor-canvas');
 
   if (!isStreamingActive) {
+    // 检查套件连通性
+    try {
+      const hRes = await fetch('/api/stream/suite-status');
+      if (hRes.ok) {
+        lastKnownSuiteHealth = await hRes.json();
+        updateSuiteLinkIndicator(lastKnownSuiteHealth);
+        if (!lastKnownSuiteHealth.isPortOpen) {
+          showToast('⚠️ 官方套件未就绪(60061端口未开放)，请启动并登录套件', '⚠️');
+        }
+      }
+    } catch (e) { }
+
     // 开启拉流
     isStreamingActive = true;
     overlay.classList.add('hidden');
@@ -544,7 +840,16 @@ async function toggleLiveStream() {
     canvas.classList.add('hidden');
     streamImg.classList.remove('hidden');
 
-    await fetch(`/api/stream/${dev.sn}/start`, { method: 'POST' });
+    const startRes = await fetch(`/api/stream/${dev.sn}/start`, { method: 'POST' });
+    if (startRes.ok) {
+      const data = await startRes.json();
+      if (data.status) {
+        updateStreamStatusPill(data.status, lastKnownSuiteHealth);
+      }
+    }
+
+    startStreamStatusPolling(dev.sn);
+
     streamImg.src = `/api/stream/${dev.sn}/mjpeg?t=${Date.now()}`;
     streamImg.onerror = () => {
       console.log('[LiveStream] MJPEG 流断开或不支持，平滑切换为高频快照轮询模式...');
@@ -594,6 +899,8 @@ function startSnapshotStream(sn) {
 
 function stopLiveStreamInternal(sn) {
   isStreamingActive = false;
+  stopStreamStatusPolling();
+
   if (snapshotTimer) {
     clearInterval(snapshotTimer);
     snapshotTimer = null;
@@ -613,6 +920,128 @@ function stopLiveStreamInternal(sn) {
   canvas.classList.remove('hidden');
 
   fetch(`/api/stream/${sn}/stop`, { method: 'POST' }).catch(() => {});
+}
+
+async function openSuiteDiagModal() {
+  const modal = document.getElementById('suite-diag-modal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  playSound('click');
+
+  document.getElementById('diag-target-sn').innerText = currentMonitorSn || '未选择';
+  document.getElementById('diag-time').innerText = new Date().toLocaleTimeString();
+
+  await refreshSuiteDiagModal();
+}
+
+function closeSuiteDiagModal() {
+  const modal = document.getElementById('suite-diag-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+async function refreshSuiteDiagModal() {
+  try {
+    const res = await fetch('/api/stream/suite-status');
+    if (!res.ok) return;
+    const data = await res.json();
+    lastKnownSuiteHealth = data;
+    updateSuiteLinkIndicator(data);
+
+    // 更新各个徽章
+    const procBadge = document.getElementById('diag-proc-badge');
+    if (data.isProcessRunning) {
+      procBadge.innerText = '✅ 已运行';
+      procBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700';
+    } else {
+      procBadge.innerText = '❌ 未检测到进程';
+      procBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700';
+    }
+
+    const portBadge = document.getElementById('diag-port-badge');
+    if (data.isPortOpen) {
+      portBadge.innerText = '✅ 端口开放 (60061)';
+      portBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700';
+    } else {
+      portBadge.innerText = '❌ 端口未开启 (需登录套件)';
+      portBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700';
+    }
+
+    const sdkBadge = document.getElementById('diag-sdk-badge');
+    if (data.isSdkActive) {
+      sdkBadge.innerText = '✅ 已激活连接';
+      sdkBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700';
+    } else {
+      sdkBadge.innerText = '🟡 未连接';
+      sdkBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700';
+    }
+
+    const streamBadge = document.getElementById('diag-stream-badge');
+    const streamInfo = currentMonitorSn && data.streams ? data.streams[currentMonitorSn] : null;
+    if (streamInfo) {
+      if (streamInfo.phase === 'Streaming' || streamInfo.phase === 4) {
+        streamBadge.innerText = `🟢 推流正常 (${streamInfo.totalFrames} 帧)`;
+        streamBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700';
+      } else if (streamInfo.phase === 'WaitingFirstFrame' || streamInfo.phase === 3) {
+        streamBadge.innerText = '⏳ 等待头显推流首帧';
+        streamBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700';
+      } else if (streamInfo.phase === 'SuiteOffline' || streamInfo.phase === 1) {
+        streamBadge.innerText = '🔴 官方套件离线';
+        streamBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700';
+      } else {
+        streamBadge.innerText = '待命省流中';
+        streamBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600';
+      }
+    } else {
+      streamBadge.innerText = '未拉流';
+      streamBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600';
+    }
+
+    // 更新总结卡片
+    const titleEl = document.getElementById('diag-summary-title');
+    const descEl = document.getElementById('diag-summary-desc');
+    const iconEl = document.getElementById('diag-summary-icon');
+    const boxEl = document.getElementById('diag-summary-box');
+
+    if (data.isPortOpen && data.isSdkActive) {
+      iconEl.innerText = '🎉';
+      titleEl.innerText = '官方套件链路通信正常';
+      titleEl.className = 'font-bold text-emerald-800 text-sm';
+      descEl.innerText = data.statusSummary || '链路就绪，可随时开启头显屏幕画面实时监控';
+      boxEl.className = 'p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 flex items-start gap-3';
+    } else {
+      iconEl.innerText = '⚠️';
+      titleEl.innerText = '官方套件链路尚未就绪';
+      titleEl.className = 'font-bold text-amber-800 text-sm';
+      descEl.innerText = data.statusSummary || '未开放 60061 端口，请确保 PICO Business Suite 处于登录状态';
+      boxEl.className = 'p-3.5 rounded-xl bg-amber-50 border border-amber-200 flex items-start gap-3';
+    }
+
+    if (data.advice) {
+      document.getElementById('diag-advice-text').innerHTML = `
+        <p class="font-bold">诊断指引: ${data.advice}</p>
+        <p>1. 官方套件必须处于登录状态，未登录或未连接网络时套件不会启动 gRPC 60061 端口。</p>
+        <p>2. 头盔必须处于开机、亮屏、佩戴状态，并在同一个局域网 Wi-Fi 下。</p>
+      `;
+    }
+  } catch (e) { }
+}
+
+async function reconnectSuiteSdk() {
+  showToast('正在请求重新握手官方套件 SDK...', '🔄');
+  try {
+    const res = await fetch('/api/stream/reconnect', { method: 'POST' });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success) {
+        showToast('★ 官方企业套件 SDK 握手成功！', '🎉');
+      } else {
+        showToast('套件 60061 端口未就绪，请先登录 PICO Business Suite', '⚠️');
+      }
+      await refreshSuiteDiagModal();
+    }
+  } catch (e) {
+    showToast('重连请求异常: ' + e.message, '❌');
+  }
 }
 
 function copyCurrentSn() {
@@ -759,28 +1188,44 @@ async function batchAction(type) {
   }
 }
 
-// 全局音量调节
+// 全局音量调节（带 200ms 滑动防抖，防止高频网络请求）
+let globalVolumeDebounce = null;
 function onGlobalVolumeInput(val) {
   globalVolume = parseInt(val);
-  document.getElementById('global-vol-text').innerText = val + '%';
+  safeSetText('global-vol-text', val + '%');
+
+  if (globalVolumeDebounce) clearTimeout(globalVolumeDebounce);
+  globalVolumeDebounce = setTimeout(() => {
+    applyGlobalVolume(val, false);
+  }, 200);
 }
 
-async function applyGlobalVolume(val) {
+async function applyGlobalVolume(val, showFeedback = true) {
+  if (globalVolumeDebounce) {
+    clearTimeout(globalVolumeDebounce);
+    globalVolumeDebounce = null;
+  }
   const snList = selectedSns.size > 0
     ? Array.from(selectedSns)
     : Array.from(devices.values()).filter(d => d.online).map(d => d.sn);
 
   if (snList.length === 0) return;
 
-  await fetch('/api/batch/volume', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      snList: snList,
-      volume: parseInt(val)
-    })
-  });
-  showToast(`已调节 ${snList.length} 台设备音量为 ${val}%`);
+  try {
+    await fetch('/api/batch/volume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        snList: snList,
+        volume: parseInt(val)
+      })
+    });
+    if (showFeedback) {
+      showToast(`已调节 ${snList.length} 台设备音量为 ${val}%`);
+    }
+  } catch (e) {
+    console.error('音量同步失败:', e);
+  }
 }
 
 // ======================== 6. 重启与关机二次确认 ========================
@@ -1761,6 +2206,9 @@ function getSelectedDeployTargets() {
   return Array.from(document.querySelectorAll('input[name="deploy-device-target"]:checked')).map(cb => cb.value);
 }
 
+let deployLogLines = 0;
+let isDeployLogExpanded = false;
+
 function appendDeployLog(msg, isErr = false) {
   const box = document.getElementById('deploy-console-box');
   const logs = document.getElementById('deploy-console-logs');
@@ -1768,16 +2216,61 @@ function appendDeployLog(msg, isErr = false) {
   box.classList.remove('hidden');
   const time = new Date().toLocaleTimeString();
   const line = document.createElement('div');
-  line.className = isErr ? 'text-rose-400' : 'text-emerald-300';
+  line.className = isErr ? 'text-rose-400 font-bold' : 'text-emerald-300';
   line.innerText = `[${time}] ${msg}`;
   logs.appendChild(line);
+  deployLogLines++;
+  const counter = document.getElementById('deploy-log-counter');
+  if (counter) counter.innerText = `${deployLogLines} 条`;
   box.scrollTop = box.scrollHeight;
+}
+
+function clearDeployLog() {
+  const logs = document.getElementById('deploy-console-logs');
+  if (logs) logs.innerHTML = '';
+  deployLogLines = 0;
+  const counter = document.getElementById('deploy-log-counter');
+  if (counter) counter.innerText = '0 条';
+  showToast('部署日志已清空', '🗑️');
+}
+
+function copyDeployLog() {
+  const logs = document.getElementById('deploy-console-logs');
+  if (!logs || !logs.innerText.trim()) {
+    showToast('暂无日志可复制', '⚠️');
+    return;
+  }
+  navigator.clipboard.writeText(logs.innerText).then(() => {
+    showToast('已复制全部执行日志到剪贴板！', '📋');
+  }).catch(() => {
+    showToast('复制失败，请手动选取', '⚠️');
+  });
+}
+
+function toggleDeployLogHeight() {
+  const box = document.getElementById('deploy-console-box');
+  const btn = document.getElementById('btn-deploy-log-toggle');
+  if (!box) return;
+  isDeployLogExpanded = !isDeployLogExpanded;
+  if (isDeployLogExpanded) {
+    box.classList.remove('min-h-[260px]', 'max-h-[460px]');
+    box.classList.add('min-h-[480px]', 'max-h-[720px]');
+    if (btn) btn.innerText = '⛶ 还原';
+  } else {
+    box.classList.remove('min-h-[480px]', 'max-h-[720px]');
+    box.classList.add('min-h-[260px]', 'max-h-[460px]');
+    if (btn) btn.innerText = '⛶ 展开';
+  }
 }
 
 async function executeDeployInstallApk() {
   const fileInput = document.getElementById('deploy-apk-file');
-  if (!fileInput.files || !fileInput.files[0]) {
-    alert('请先选择要上传安装的 .apk 文件！');
+  const localPathInput = document.getElementById('deploy-apk-localpath');
+  const localPath = localPathInput ? localPathInput.value.trim() : '';
+  const hasFile = fileInput.files && fileInput.files[0];
+
+  if (!hasFile && !localPath) {
+    alert('请选择要上传的 .apk 文件，或输入服务器本地 APK 绝对路径！');
     return;
   }
   const targets = getSelectedDeployTargets();
@@ -1786,10 +2279,41 @@ async function executeDeployInstallApk() {
     return;
   }
 
+  if (localPath) {
+    // 方案 A：服务器本地路径极速直推（免上传·秒装）
+    const fileName = localPath.replace(/\\/g, '/').split('/').pop();
+    if (!confirm(`确认要将服务器本地安装包【${fileName}】免上传直接安装到 ${targets.length} 台设备吗？\n（路径: ${localPath}）`)) return;
+
+    appendDeployLog(`🚀 [本地直推] 开始批量安装 APK: ${fileName}，目标: ${targets.join(', ')}`);
+    showToast(`正在免上传直接安装【${fileName}】...`, '📲');
+
+    try {
+      const res = await fetch('/api/adb/local-install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ localPath, targets })
+      });
+      const data = await res.json();
+      if (data.success && data.results) {
+        data.results.forEach(r => {
+          appendDeployLog(`设备 [${r.target}]: ${r.message}`, !r.success);
+        });
+        showToast('APK 批量本地直发安装执行完毕！', '✓');
+      } else {
+        appendDeployLog(`❌ 安装失败: ${data.message || '未知错误'}`, true);
+        showToast(`安装出错: ${data.message}`, '⚠️');
+      }
+    } catch (e) {
+      appendDeployLog(`❌ 网络或服务端错误: ${e.message}`, true);
+    }
+    return;
+  }
+
+  // 方案 B：传统网页文件上传推流安装
   const file = fileInput.files[0];
   if (!confirm(`确认要将安装包【${file.name}】(${(file.size / 1024 / 1024).toFixed(1)}MB) 批量安装到 ${targets.length} 台设备吗？`)) return;
 
-  appendDeployLog(`🚀 开始批量安装 APK: ${file.name}，目标设备: ${targets.join(', ')}`);
+  appendDeployLog(`🚀 开始批量上传安装 APK: ${file.name}，目标设备: ${targets.join(', ')}`);
   showToast(`正在上传并推流安装【${file.name}】...`, '📲');
 
   const formData = new FormData();
@@ -1925,8 +2449,12 @@ async function executeDeployCreateFolder() {
 
 async function executeDeployPushFile() {
   const fileInput = document.getElementById('deploy-push-file');
-  if (!fileInput.files || !fileInput.files[0]) {
-    alert('请先选择要推送的文件或 ZIP 压缩包！');
+  const localPathInput = document.getElementById('deploy-push-localpath');
+  const localPath = localPathInput ? localPathInput.value.trim() : '';
+  const hasFile = fileInput.files && fileInput.files[0];
+
+  if (!hasFile && !localPath) {
+    alert('请选择要推送的文件/ZIP，或输入服务器本地文件/文件夹绝对路径！');
     return;
   }
   const remotePath = document.getElementById('deploy-push-remote').value.trim() || '/sdcard/Download/';
@@ -1935,12 +2463,47 @@ async function executeDeployPushFile() {
     alert('请至少勾选一台目标头戴设备！');
     return;
   }
-
-  const file = fileInput.files[0];
   const overwrite = document.getElementById('deploy-push-overwrite')?.checked ?? true;
-  if (!confirm(`确认要将【${file.name}】(${(file.size / 1024 / 1024).toFixed(1)}MB) 批量推送到 ${targets.length} 台设备的【${remotePath}】存储目录吗？${overwrite ? ' (遇同名将强制覆盖替换)' : ''}`)) return;
+  const flatten = document.getElementById('deploy-push-flatten')?.checked ?? false;
 
-  appendDeployLog(`📤 开始批量推送文件: ${file.name} -> ${remotePath}，目标: ${targets.join(', ')}${overwrite ? ' [强制覆盖]' : ''}`);
+  if (localPath) {
+    // 方案 A：服务器本地路径极速直推（免上传·无文件大小限制）
+    const itemName = localPath.replace(/\\/g, '/').split('/').filter(Boolean).pop();
+    const modeDesc = flatten ? '【展开内部文件传输】' : '【保留外层文件夹】';
+    if (!confirm(`确认要将服务器本地【${itemName}】免上传直接推送到 ${targets.length} 台设备的【${remotePath}】存储目录吗？\n传输模式: ${modeDesc}${overwrite ? ' (遇同名文件强制替换)' : ''}\n（路径: ${localPath}）`)) return;
+
+    appendDeployLog(`📤 [本地直推] 开始批量推送: ${itemName} -> ${remotePath}，目标: ${targets.join(', ')} [${modeDesc}]${overwrite ? ' [同名覆盖]' : ''}`);
+    showToast(`正在直接推流【${itemName}】...`, '📤');
+
+    try {
+      const res = await fetch('/api/adb/local-push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ localPath, remotePath, targets, overwrite, flatten })
+      });
+      const data = await res.json();
+      if (data.success && data.results) {
+        data.results.forEach(r => {
+          appendDeployLog(`设备 [${r.target}]: ${r.message}`, !r.success);
+        });
+        showToast('批量本地推送执行完毕！', '✓');
+      } else {
+        appendDeployLog(`❌ 推送失败: ${data.message || '未知错误'}`, true);
+        showToast(`推送出错: ${data.message}`, '⚠️');
+      }
+    } catch (e) {
+      appendDeployLog(`❌ 推送异常: ${e.message}`, true);
+    }
+    return;
+  }
+
+  // 方案 B：传统网页文件上传推送
+  const file = fileInput.files[0];
+  const isZip = file.name.toLowerCase().endsWith('.zip');
+  const modeDesc = isZip ? (flatten ? '【ZIP自动解压·内部文件展开平铺】' : '【ZIP自动解压·保留压缩包同名文件夹】') : '';
+  if (!confirm(`确认要将【${file.name}】(${(file.size / 1024 / 1024).toFixed(1)}MB) 批量推送到 ${targets.length} 台设备的【${remotePath}】存储目录吗？${modeDesc ? '\n模式: ' + modeDesc : ''}${overwrite ? ' (遇同名文件强制替换)' : ''}`)) return;
+
+  appendDeployLog(`📤 开始批量上传推送文件: ${file.name} -> ${remotePath}，目标: ${targets.join(', ')}${modeDesc ? ' ' + modeDesc : ''}${overwrite ? ' [同名覆盖]' : ''}`);
   showToast(`正在向 ${targets.length} 台设备推送文件...`, '📤');
 
   const formData = new FormData();
@@ -1948,6 +2511,7 @@ async function executeDeployPushFile() {
   formData.append('remotePath', remotePath);
   formData.append('targets', targets.join(','));
   formData.append('overwrite', overwrite);
+  formData.append('flatten', flatten);
 
   try {
     const res = await fetch('/api/adb/upload-push', {
@@ -2021,7 +2585,7 @@ function startOtaUpload() {
   formData.append('file', selectedOtaFile);
 
   const xhr = new XMLHttpRequest();
-  xhr.open('POST', '/api/ota/upload');
+  xhr.open('POST', apiUrl('/api/ota/upload'));
 
   xhr.upload.onprogress = (e) => {
     if (e.lengthComputable) {
@@ -2105,4 +2669,228 @@ function pollOtaReboot() {
       window.location.reload();
     }
   }, 1000);
+}
+
+// ======================== 11. 设备分组与分区播控管理 ========================
+function openGroupManageModal() {
+  playSound('click');
+  document.getElementById('group-modal').classList.remove('hidden');
+  renderGroupManageList();
+  cancelGroupForm();
+}
+
+function closeGroupManageModal() {
+  document.getElementById('group-modal').classList.add('hidden');
+  renderGroupTabs();
+  renderMatrix();
+}
+
+function renderGroupManageList() {
+  const container = document.getElementById('group-list-container');
+  if (!container) return;
+  container.innerHTML = '';
+
+  const groups = systemConfig?.groups || [];
+  if (groups.length === 0) {
+    container.innerHTML = `
+      <div class="p-4 bg-slate-50 border border-dashed border-slate-200 rounded-xl text-center text-slate-400 text-xs">
+        暂未创建任何设备分组，点击上方「➕ 新增分组」开始创建。
+      </div>
+    `;
+    return;
+  }
+
+  groups.forEach(g => {
+    const item = document.createElement('div');
+    item.className = 'flex items-center justify-between p-3 bg-white border border-slate-200 rounded-xl hover:border-blue-300 transition shadow-xs';
+
+    // 绑定的项目名称
+    let projName = '未绑定预设游戏';
+    if (g.defaultProjectId) {
+      const p = projects.find(x => x.id === g.defaultProjectId || x.packageName === g.defaultProjectId);
+      if (p) projName = `预设游戏: ${p.icon || '🎮'} ${p.name}`;
+    }
+
+    const devCount = (g.deviceIdentifiers || []).length;
+
+    item.innerHTML = `
+      <div class="flex items-center gap-3">
+        <span class="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-sm">🏷️</span>
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="font-bold text-slate-800 text-xs">${escapeHtml(g.name)}</span>
+            <span class="px-1.5 py-0.2 rounded text-[10px] bg-slate-100 text-slate-600 font-mono">${devCount} 台设备</span>
+          </div>
+          <span class="text-[11px] text-indigo-600 font-medium">${escapeHtml(projName)}</span>
+        </div>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <button onclick="openEditGroupForm('${g.id}')" class="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-xs font-semibold transition">
+          ✏️ 编辑
+        </button>
+        <button onclick="deleteGroup('${g.id}')" class="px-2.5 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg text-xs font-semibold transition">
+          🗑️ 删除
+        </button>
+      </div>
+    `;
+    container.appendChild(item);
+  });
+}
+
+function openNewGroupForm() {
+  playSound('click');
+  document.getElementById('group-edit-form').classList.remove('hidden');
+  document.getElementById('group-form-title').innerText = '➕ 新增设备分组';
+  document.getElementById('group-form-id').value = '';
+  document.getElementById('group-form-name').value = '';
+
+  populateGroupProjectSelect('');
+  renderGroupDeviceSelector([]);
+}
+
+function openEditGroupForm(groupId) {
+  playSound('click');
+  const grp = (systemConfig?.groups || []).find(g => g.id === groupId);
+  if (!grp) return;
+
+  document.getElementById('group-edit-form').classList.remove('hidden');
+  document.getElementById('group-form-title').innerText = `✏️ 编辑分组: ${grp.name}`;
+  document.getElementById('group-form-id').value = grp.id;
+  document.getElementById('group-form-name').value = grp.name;
+
+  populateGroupProjectSelect(grp.defaultProjectId || '');
+  renderGroupDeviceSelector(grp.deviceIdentifiers || []);
+}
+
+function cancelGroupForm() {
+  document.getElementById('group-edit-form').classList.add('hidden');
+}
+
+function populateGroupProjectSelect(selectedProjId) {
+  const sel = document.getElementById('group-form-project');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">-- 不预设（手动选游戏）--</option>';
+  projects.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.innerText = `${p.icon || '🎮'} ${p.name} (${p.packageName})`;
+    if (p.id === selectedProjId || p.packageName === selectedProjId) {
+      opt.selected = true;
+    }
+    sel.appendChild(opt);
+  });
+}
+
+function renderGroupDeviceSelector(checkedIdentifiers) {
+  const grid = document.getElementById('group-device-selector-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+
+  const checkedSet = new Set((checkedIdentifiers || []).map(i => i.toLowerCase().trim()));
+
+  const devMap = new Map();
+  devices.forEach(d => {
+    devMap.set(d.sn, { sn: d.sn, alias: d.displayName || d.alias || d.sn, online: d.online });
+  });
+  if (systemConfig && systemConfig.headsetAliases) {
+    for (const [sn, alias] of Object.entries(systemConfig.headsetAliases)) {
+      if (!devMap.has(sn)) {
+        devMap.set(sn, { sn, alias: alias || sn, online: false });
+      }
+    }
+  }
+
+  const devList = Array.from(devMap.values()).sort((a, b) => {
+    const numA = parseInt(a.alias.replace(/\D/g, '')) || 999;
+    const numB = parseInt(b.alias.replace(/\D/g, '')) || 999;
+    return numA - numB;
+  });
+
+  if (devList.length === 0) {
+    grid.innerHTML = '<span class="text-slate-400 text-xs col-span-full py-2 text-center">暂无已知头显，设备开机入网后将自动展现</span>';
+    return;
+  }
+
+  devList.forEach(dev => {
+    const snLower = dev.sn.toLowerCase().trim();
+    const aliasLower = dev.alias.toLowerCase().trim();
+    const digits = dev.alias.replace(/\D/g, '');
+    const isChecked = checkedSet.has(snLower) || checkedSet.has(aliasLower) || (digits && checkedSet.has(digits));
+
+    const label = document.createElement('label');
+    label.className = 'flex items-center gap-1.5 p-1.5 rounded hover:bg-slate-50 border border-slate-100 cursor-pointer text-[11px] select-none';
+    label.innerHTML = `
+      <input type="checkbox" name="group-dev-cb" value="${escapeHtml(dev.sn)}" ${isChecked ? 'checked' : ''} class="rounded text-blue-600 accent-blue-600" />
+      <span class="font-bold text-slate-800 font-mono truncate" title="${escapeHtml(dev.alias)}">${escapeHtml(dev.alias)}</span>
+      <span class="text-[9px] text-slate-400 font-mono truncate" title="${dev.sn}">(${dev.sn.slice(-6)})</span>
+    `;
+    grid.appendChild(label);
+  });
+}
+
+function toggleAllGroupDevices(checked) {
+  document.querySelectorAll('input[name="group-dev-cb"]').forEach(cb => {
+    cb.checked = checked;
+  });
+}
+
+async function saveGroupFromForm() {
+  const id = document.getElementById('group-form-id').value.trim();
+  const name = document.getElementById('group-form-name').value.trim();
+  const defaultProjectId = document.getElementById('group-form-project').value.trim();
+
+  if (!name) {
+    alert('请输入分组名称！');
+    return;
+  }
+
+  const selectedDevs = Array.from(document.querySelectorAll('input[name="group-dev-cb"]:checked')).map(cb => cb.value);
+
+  const payload = {
+    id: id || undefined,
+    name,
+    defaultProjectId,
+    deviceIdentifiers: selectedDevs
+  };
+
+  try {
+    const res = await fetch('/api/config/groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      await loadConfig();
+      renderGroupManageList();
+      cancelGroupForm();
+      showToast(`分组【${name}】已成功保存！`, '✓');
+    } else {
+      alert(`保存失败: ${data.message || '未知错误'}`);
+    }
+  } catch (e) {
+    alert(`网络错误: ${e.message}`);
+  }
+}
+
+async function deleteGroup(groupId) {
+  const grp = (systemConfig?.groups || []).find(g => g.id === groupId);
+  const name = grp ? grp.name : '该分组';
+  if (!confirm(`确认要删除分组【${name}】吗？`)) return;
+
+  try {
+    const res = await fetch(`/api/config/groups/${groupId}`, { method: 'DELETE' });
+    if (res.ok) {
+      if (currentActiveGroupId === groupId) {
+        currentActiveGroupId = 'all';
+      }
+      await loadConfig();
+      renderGroupManageList();
+      showToast(`分组【${name}】已删除`, '🗑️');
+    } else {
+      alert('删除分组失败');
+    }
+  } catch (e) {
+    alert(`网络错误: ${e.message}`);
+  }
 }

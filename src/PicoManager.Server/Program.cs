@@ -9,6 +9,9 @@ using Microsoft.Extensions.Hosting;
 using PicoManager.Server.Hubs;
 using PicoManager.Server.Services;
 
+// 注册控制台与进程退出生命周期监听，确保窗口关闭或停止时立即释放所有底层 C++ 原生线程与 DLL 句柄
+ConsoleLifetimeHelper.Register();
+
 string baseDir = AppDomain.CurrentDomain.BaseDirectory;
 string contentRoot = Directory.GetCurrentDirectory();
 
@@ -53,10 +56,25 @@ try
 }
 catch { }
 
-// 配置 Kestrel 监听 0.0.0.0
+// 配置 Kestrel 监听 0.0.0.0 并解除上传体大小限制
 builder.WebHost.ConfigureKestrel(serverOptions =>
 {
     serverOptions.Listen(IPAddress.Any, port);
+    serverOptions.Limits.MaxRequestBodySize = null; // 解除 Kestrel 默认 30MB 限制，允许超大文件与 APK 上传
+});
+
+// 解除表单上传限制（允许最大 16GB 大文件及大型 VR 游戏包）
+builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(options =>
+{
+    options.MultipartBodyLengthLimit = 1024L * 1024L * 1024L * 16L; // 16GB
+    options.ValueLengthLimit = int.MaxValue;
+    options.MultipartHeadersLengthLimit = int.MaxValue;
+});
+
+// 优化关机超时时间（2秒迅速完成关闭，杜绝后台顽固驻留30秒）
+builder.Services.Configure<HostOptions>(options =>
+{
+    options.ShutdownTimeout = TimeSpan.FromSeconds(2);
 });
 
 // 注册依赖注入服务
@@ -89,6 +107,7 @@ app.UseStaticFiles();
 
 app.UseRouting();
 app.UseCors("AllowAll");
+app.UseWebSockets();
 app.MapControllers();
 app.MapHub<PicoHub>("/hubs/pico");
 app.MapFallbackToFile("index.html");
@@ -116,3 +135,54 @@ Console.WriteLine("=============================================================
 Console.WriteLine();
 
 app.Run();
+
+// 主程序运行结束后彻底清理解构
+ConsoleLifetimeHelper.ForceCleanExit();
+
+internal static class ConsoleLifetimeHelper
+{
+    [System.Runtime.InteropServices.DllImport("Kernel32.dll")]
+    private static extern bool SetConsoleCtrlHandler(HandlerRoutine handler, bool add);
+
+    private delegate bool HandlerRoutine(int ctrlType);
+    private static HandlerRoutine? _routine;
+    private static int _exitInvoked = 0;
+
+    public static void Register()
+    {
+        _routine = CtrlHandler;
+        SetConsoleCtrlHandler(_routine, true);
+
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            ForceCleanExit();
+        };
+    }
+
+    private static bool CtrlHandler(int ctrlType)
+    {
+        // 0=CTRL_C, 1=CTRL_BREAK, 2=CTRL_CLOSE (用户直接点击控制台右上角 [X]), 5=LOGOFF, 6=SHUTDOWN
+        ForceCleanExit();
+        return true;
+    }
+
+    public static void ForceCleanExit()
+    {
+        if (System.Threading.Interlocked.Exchange(ref _exitInvoked, 1) != 0) return;
+
+        try
+        {
+            PicoManager.Server.Native.PXREAOpenApi.Deinit();
+        }
+        catch { }
+
+        // 强行终结进程及所有底层 C++ 原生线程 (PXREAClientSDK)，瞬间释放被占用的所有文件句柄与 DLL
+        try
+        {
+            System.Diagnostics.Process.GetCurrentProcess().Kill();
+        }
+        catch { }
+
+        Environment.Exit(0);
+    }
+}
