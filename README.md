@@ -24,7 +24,7 @@ PicoManager 是面向 PICO VR 场馆运营场景的 Windows 管理系统，用�
 
 ## 快速开始
 
-1. 从 [Releases](https://github.com/StfFly/pico-device-control/releases) 下载 `PicoVR_Server_Deploy.zip`。
+1. 从 [Releases](https://github.com/StfFly/pico-device-control/releases) 下载 `PicoVR_Server_Deploy_v2.0.0.zip`。
 2. 将压缩包完整解压到本地目录。
 3. 启动 PICO Business Suite，并开启服务模式。
 4. 运行部署包内的启动脚本，或直接运行 `PicoManager.Server.exe`。
