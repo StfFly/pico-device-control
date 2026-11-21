@@ -12,8 +12,8 @@ namespace PicoManager.Server.Services
 {
     public class OtaVersionInfo
     {
-        public string Version { get; set; } = "v1.3.0";
-        public string BuildTime { get; set; } = "2026-11-17 16:50";
+        public string Version { get; set; } = "v2.0.0";
+        public string BuildTime { get; set; } = "2026-11-20";
         public string Channel { get; set; } = "Release (商用稳定版)";
         public string OsPlatform { get; set; } = Environment.OSVersion.ToString();
         public string DotNetVersion { get; set; } = Environment.Version.ToString();
