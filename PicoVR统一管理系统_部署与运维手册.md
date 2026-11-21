@@ -9,12 +9,12 @@
 
 ### 1. 软件环境与官方组件下载直链
 
-| 依赖组件名称 | 是否必需 | 作用与说明 | 官方获取 / 直链下载地址 |
-| :--- | :--- | :--- | :--- |
-| **PICO Business Suite (PC 端)** | **必需** | 头显局域网信令交互、设备加锁、SDK 调度与投屏的**核心底座软件**。 | [PICO 企业服务官方门户下载](https://business.picoxr.com/)<br/>*(开发者社区：[developer-cn.picoxr.com](https://developer-cn.picoxr.com/))* |
-| **PICO VR 端企业套件客户端 (APK)** | **必需** | 运行在头显设备内部（Neo3 / PICO 4 / Ultra），用于响应后台加锁与游戏拉起。 | 由 PC 端 PICO Business Suite 连线自动推送安装，或在头显内应用商店获取 |
-| **Microsoft Visual C++ 2015-2022 (x64)** | **必需** | `PXREAClientSDK.dll` (PICO 原生 C++ SDK) 及多媒体视频编解码底层运行库。 | [微软官方 VC++ 运行库直链下载 (vc_redist.x64.exe)](https://aka.ms/vs/17/release/vc_redist.x64.exe)<br/>*(套件安装目录下通常也自带备用)* |
-| **.NET 10.0 / 8.0 SDK (开发选配)** | 可选 | 部署包已采用 Self-Contained 独立发布，**现场电脑无需安装**；若需修改源码二次开发需安装。 | [微软官方 .NET 下载专区](https://dotnet.microsoft.com/download) |
+| 依赖组件名称                                   | 是否必需   | 作用与说明                                                  | 官方获取 / 直链下载地址                                                                                                             |
+| :--------------------------------------- | :----- | :----------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------ |
+| **PICO Business Suite (PC 端)**           | **必需** | 头显局域网信令交互、设备加锁、SDK 调度与投屏的**核心底座软件**。                   | [PICO 企业服务官方门户下载](https://business.picoxr.com/)<br/>*(开发者社区：[developer-cn.picoxr.com](https://developer-cn.picoxr.com/))* |
+| **PICO VR 端企业套件客户端 (APK)**               | **必需** | 运行在头显设备内部（Neo3 / PICO 4 / Ultra），用于响应后台加锁与游戏拉起。        | 由 PC 端 PICO Business Suite 连线自动推送安装，或在头显内应用商店获取                                                                           |
+| **Microsoft Visual C++ 2015-2022 (x64)** | **必需** | `PXREAClientSDK.dll` (PICO 原生 C++ SDK) 及多媒体视频编解码底层运行库。 | [微软官方 VC++ 运行库直链下载 (vc_redist.x64.exe)](https://aka.ms/vs/17/release/vc_redist.x64.exe)<br/>*(套件安装目录下通常也自带备用)*            |
+| **.NET 10.0 / 8.0 SDK (开发选配)**           | 可选     | 部署包已采用 Self-Contained 独立发布，**现场电脑无需安装**；若需修改源码二次开发需安装。 | [微软官方 .NET 下载专区](https://dotnet.microsoft.com/download)                                                                   |
 
 ---
 
