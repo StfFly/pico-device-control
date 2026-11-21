@@ -1,49 +1,9 @@
-// ======================== PicoManager v2.0 现代一体化前端交互 ========================
+// ======================== PicoManager 运营工作台 前端交互逻辑 ========================
 
-const IS_TAURI_ENV = (
-  window.location.protocol === 'tauri:' ||
-  window.location.protocol === 'asset:' ||
-  window.location.hostname === 'tauri.localhost' ||
-  Boolean(window.__TAURI__)
-);
-
-let LOCAL_PORT = 8999;
-let RUNTIME_PORT = 8999;
-let CONN_MODE = 'local'; // 'local' | 'remote'
-let REMOTE_HOST = '';
-let REMOTE_PORT = 8999;
-let API_BASE = IS_TAURI_ENV ? `http://127.0.0.1:${LOCAL_PORT}` : '';
-let PRIMARY_LAN_URL = '';
-
-function updateConnectionBase() {
-  if (CONN_MODE === 'remote' && REMOTE_HOST) {
-    RUNTIME_PORT = REMOTE_PORT || 8999;
-    API_BASE = `http://${REMOTE_HOST}:${RUNTIME_PORT}`;
-  } else {
-    RUNTIME_PORT = LOCAL_PORT;
-    API_BASE = IS_TAURI_ENV ? `http://127.0.0.1:${LOCAL_PORT}` : '';
-  }
-  updateConnModeUi();
-}
-
-function updateConnModeUi() {
-  const pill = document.getElementById('conn-mode-pill');
-  const txt = document.getElementById('conn-mode-text');
-  if (pill && txt) {
-    if (CONN_MODE === 'remote' && REMOTE_HOST) {
-      pill.className = 'status-pill status-pill--online';
-      txt.textContent = `远程服务: ${REMOTE_HOST}:${REMOTE_PORT}`;
-    } else {
-      pill.className = 'status-pill status-pill--info';
-      txt.textContent = '当前模式: 本地直连';
-    }
-  }
-  if (CONN_MODE === 'remote' && REMOTE_HOST) {
-    safeSetText('header-port-desc', `远程服务模式 · 已连接 ${REMOTE_HOST}:${REMOTE_PORT}`);
-  } else {
-    safeSetText('header-port-desc', `Rust 原生一体化控制中心 · HTTP ${LOCAL_PORT} / UDP 8998`);
-  }
-}
+// 多环境 API 基础路径兼容 (标准 Web 浏览器 / Tauri 桌面客户端)
+const API_BASE = (window.location.protocol === 'tauri:' || window.location.protocol === 'asset:' || window.location.hostname === 'tauri.localhost')
+  ? 'http://localhost:8999'
+  : '';
 
 function apiUrl(path) {
   if (path && path.startsWith('/') && API_BASE) {
@@ -52,700 +12,181 @@ function apiUrl(path) {
   return path;
 }
 
-function wsUrl(path) {
-  if (API_BASE) {
-    return API_BASE.replace(/^http/, 'ws') + path;
-  }
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.host}${path}`;
-}
-
-const originalFetch = window.fetch.bind(window);
-window.fetch = function(url, init) {
-  if (typeof url === 'string' && url.startsWith('/') && API_BASE) {
-    url = API_BASE + url;
-  }
-  return originalFetch(url, init);
-};
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+if (API_BASE) {
+  const originalFetch = window.fetch;
+  window.fetch = function(url, init) {
+    if (typeof url === 'string' && url.startsWith('/')) {
+      url = API_BASE + url;
+    }
+    return originalFetch(url, init);
+  };
 }
 
 function safeSetText(id, text) {
   const el = document.getElementById(id);
-  if (el) el.textContent = text;
+  if (el) el.innerText = text;
 }
 
-// ======================== 全局状态 ========================
-const devices = new Map();
+// 全局状态
+let devices = new Map();
 let projects = [];
 let systemConfig = null;
-const selectedSns = new Set();
-let currentActiveGroupId = 'all';
+let selectedSns = new Set();
 let currentMonitorSn = null;
 let currentProject = null;
 let globalVolume = 70;
 let pendingSystemAction = null;
-let realtimeSocket = null;
-let wsReconnectTimer = null;
-let wsReconnectAttempts = 0;
-let isStreamingActive = false;
-let snapshotTimer = null;
-let streamStatusPollTimer = null;
-let lastKnownSuiteHealth = null;
-let adbDevicesList = [];
-let deployLogLines = 0;
-let isDeployLogExpanded = false;
-let toastTimer = null;
+let hubConnection = null;
+let isStreamingActive = false; // 按需拉流状态开关，默认省流待命
 
+// 判断当前包名是否为系统桌面或企业桌面环境 (非体验游戏运行中)
 function isDesktopApp(app) {
   if (!app) return true;
   const a = app.trim();
-  return a === '' ||
-    a === '系统桌面' ||
-    a === 'com.picovr.enterpriseassistant' ||
-    a === 'com.pico.launcher';
+  return a === '' || 
+         a === '系统桌面' || 
+         a === 'com.picovr.enterpriseassistant' || 
+         a === 'com.pico.launcher';
 }
 
-const WALLPAPERS = [
-  { name: '大乱斗', url: './wallpaper/' + encodeURIComponent('大乱斗.png') },
-  { name: '大冒险', url: './wallpaper/' + encodeURIComponent('大冒险.png') },
-  { name: '大师版', url: './wallpaper/' + encodeURIComponent('大师版.png') },
-  { name: '王城', url: './wallpaper/' + encodeURIComponent('王城.png') }
-];
-let currentWallpaperIdx = 0;
-let activeSlideSlot = 0;
-let wallpaperTimer = null;
-
-function matchWallpaperForProject(proj) {
-  const txt = `${proj?.name || ''} ${proj?.packageName || ''}`.toLowerCase();
-  if (txt.includes('大冒险') || txt.includes('ocean') || txt.includes('dino')) return WALLPAPERS[1];
-  if (txt.includes('大师') || txt.includes('master')) return WALLPAPERS[2];
-  if (txt.includes('王城') || txt.includes('wangcheng')) return WALLPAPERS[3];
-  return WALLPAPERS[0];
-}
-
-function setWallpaperByUrl(url) {
-  const s0 = document.getElementById('wp-slide-0');
-  const s1 = document.getElementById('wp-slide-1');
-  if (!s0 || !s1) return;
-  const nextSlot = activeSlideSlot === 0 ? 1 : 0;
-  const nextEl = nextSlot === 0 ? s0 : s1;
-  const curEl = activeSlideSlot === 0 ? s0 : s1;
-  nextEl.style.backgroundImage = `url("${url}")`;
-  nextEl.classList.add('active');
-  curEl.classList.remove('active');
-  activeSlideSlot = nextSlot;
-}
-
-function initWallpapers() {
-  const s0 = document.getElementById('wp-slide-0');
-  if (s0 && WALLPAPERS[0]) {
-    s0.style.backgroundImage = `url("${WALLPAPERS[0].url}")`;
-    s0.classList.add('active');
-  }
-  if (wallpaperTimer) clearInterval(wallpaperTimer);
-  wallpaperTimer = setInterval(() => {
-    currentWallpaperIdx = (currentWallpaperIdx + 1) % WALLPAPERS.length;
-    setWallpaperByUrl(WALLPAPERS[currentWallpaperIdx].url);
-  }, 15000);
-}
-
-function cycleWallpaper() {
-  currentWallpaperIdx = (currentWallpaperIdx + 1) % WALLPAPERS.length;
-  const wp = WALLPAPERS[currentWallpaperIdx];
-  setWallpaperByUrl(wp.url);
-  showToast(`已切换壁纸: ${wp.name}`, '🖼️');
-}
-
-// ======================== 主题切换与界面预缩放 ========================
-let currentThemeMode = localStorage.getItem('pico-theme-mode') || localStorage.getItem('pico-theme') || 'dark';
-let currentUiScale = parseFloat(localStorage.getItem('pico-ui-scale') || '1.0') || 1.0;
-let currentFontScale = parseFloat(localStorage.getItem('pico-font-scale') || '1.0') || 1.0;
-
-function initTheme() {
-  applyThemeMode(currentThemeMode, false);
-  initDisplayScale();
-  try {
-    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
-      if (currentThemeMode === 'system') applyThemeMode('system', false);
-    });
-  } catch { }
-}
-
-function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme);
-  const btn = document.getElementById('theme-toggle-btn');
-  if (btn) btn.textContent = theme === 'dark' ? '☀️' : '🌙';
-}
-
-function applyThemeMode(mode, save = true) {
-  currentThemeMode = mode || 'dark';
-  if (save) {
-    localStorage.setItem('pico-theme-mode', currentThemeMode);
-  }
-  let resolved = currentThemeMode;
-  if (currentThemeMode === 'system') {
-    resolved = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-  }
-  localStorage.setItem('pico-theme', resolved);
-  applyTheme(resolved);
-  updateScaleControlsUI();
-}
-
-function toggleTheme() {
-  const cur = document.documentElement.getAttribute('data-theme') || 'dark';
-  const next = cur === 'dark' ? 'light' : 'dark';
-  applyThemeMode(next, true);
-}
-
-function initDisplayScale() {
-  setUiScale(currentUiScale, false);
-  setFontScale(currentFontScale, false);
-}
-
-function openDisplaySettingsModal() {
-  updateScaleControlsUI();
-  document.getElementById('display-settings-modal')?.classList.remove('hidden');
-}
-
-function setUiScale(scale, save = true) {
-  const num = parseFloat(scale);
-  if (!Number.isFinite(num)) return;
-  currentUiScale = Math.min(Math.max(num, 0.75), 1.35);
-  if (save) localStorage.setItem('pico-ui-scale', String(currentUiScale));
-  // 仅缩放前景顶栏与工作区，绝不缩放 html 根节点，确保底层 .wallpaper-bg 壁纸在任意缩放下始终 100% 满屏铺满
-  document.documentElement.style.zoom = '';
-  const topbar = document.querySelector('.topbar');
-  const workspace = document.querySelector('.workspace');
-  if (topbar) topbar.style.zoom = String(currentUiScale);
-  if (workspace) workspace.style.zoom = String(currentUiScale);
-  updateScaleControlsUI();
-}
-
-function onUiScaleSliderInput(val) {
-  setUiScale(parseInt(val, 10) / 100, true);
-}
-
-function setFontScale(scale, save = true) {
-  const num = parseFloat(scale);
-  if (!Number.isFinite(num)) return;
-  currentFontScale = Math.min(Math.max(num, 0.8), 1.4);
-  if (save) localStorage.setItem('pico-font-scale', String(currentFontScale));
-  document.documentElement.style.setProperty('--font-scale', String(currentFontScale));
-  updateScaleControlsUI();
-}
-
-function onFontScaleSliderInput(val) {
-  setFontScale(parseInt(val, 10) / 100, true);
-}
-
-function updateScaleControlsUI() {
-  const pct = Math.round(currentUiScale * 100);
-  const uiSlider = document.getElementById('ui-scale-slider');
-  const uiDisplay = document.getElementById('ui-scale-display');
-  const scaleLabel = document.getElementById('scale-label');
-  if (uiSlider) uiSlider.value = String(pct);
-  if (uiDisplay) uiDisplay.textContent = `${pct}%`;
-  if (scaleLabel) scaleLabel.textContent = `缩放: ${pct}%`;
-
-  const fontPct = Math.round(currentFontScale * 100);
-  const fontSlider = document.getElementById('font-scale-slider');
-  const fontDisplay = document.getElementById('font-scale-display');
-  if (fontSlider) fontSlider.value = String(fontPct);
-  if (fontDisplay) {
-    if (fontPct <= 85) fontDisplay.textContent = `小 (${fontPct}%)`;
-    else if (fontPct <= 105) fontDisplay.textContent = `标准 (${fontPct}%)`;
-    else if (fontPct <= 120) fontDisplay.textContent = `大 (${fontPct}%)`;
-    else fontDisplay.textContent = `特大 (${fontPct}%)`;
-  }
-
-  ['system', 'light', 'dark'].forEach((m) => {
-    const el = document.getElementById(`theme-opt-${m}`);
-    if (el) el.classList.toggle('btn--primary', currentThemeMode === m);
-  });
-}
-
-// ======================== 弹窗与统一事件委托（100% 兼容 Tauri v2 严格 CSP） ========================
-function closeModalById(id) {
-  const el = document.getElementById(id);
-  if (el) el.classList.add('hidden');
-  if (id === 'confirm-modal') pendingSystemAction = null;
-}
-
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    ['confirm-modal', 'alias-modal', 'suite-diag-modal', 'ota-modal', 'group-modal', 'adb-modal', 'config-modal', 'conn-mode-modal', 'display-settings-modal']
-      .forEach((id) => closeModalById(id));
-  }
-});
-
-document.addEventListener('click', (e) => {
-  // 1. 点击弹窗遮罩层关闭
-  const backdropId = e.target?.dataset?.backdropClose;
-  if (backdropId) {
-    closeModalById(backdropId);
-    return;
-  }
-
-  // 2. 统一 data-action 按钮与卡片操作分发
-  const trigger = e.target.closest('[data-action]');
-  if (!trigger) return;
-
-  if (trigger.dataset.stop === '1') {
-    e.stopPropagation();
-  }
-
-  const action = trigger.dataset.action;
-  const arg = trigger.dataset.arg ?? '';
-  const arg2 = trigger.dataset.arg2 ?? '';
-
-  switch (action) {
-    case 'copyLanUrl': copyLanUrl(); break;
-    case 'openDisplaySettingsModal': openDisplaySettingsModal(); break;
-    case 'setUiScale': setUiScale(arg); break;
-    case 'setFontScale': setFontScale(arg); break;
-    case 'applyThemeMode': applyThemeMode(arg); break;
-    case 'toggleTheme': toggleTheme(); break;
-    case 'openAdbModal': openAdbModal(); break;
-    case 'openSuiteDiagModal': openSuiteDiagModal(); break;
-    case 'openOtaModal': openOtaModal(); break;
-    case 'openConfigModal': openConfigModal(arg || 'app'); break;
-    case 'openConnModeModal': openConnModeModal(); break;
-    case 'switchToLocalMode': switchToLocalMode(); break;
-    case 'connectRemoteService': connectRemoteService(); break;
-    case 'selectRemoteHistory': {
-      const [h, p] = arg.split(':');
-      const ipEl = document.getElementById('conn-remote-ip');
-      const portEl = document.getElementById('conn-remote-port');
-      if (ipEl && h) ipEl.value = h;
-      if (portEl && p) portEl.value = p;
-      break;
-    }
-    case 'openGroupManageModal': openGroupManageModal(); break;
-    case 'closeModal': closeModalById(arg); break;
-    case 'closeConfirmModal': closeConfirmModal(); break;
-    case 'dismissLowBatteryAlert':
-      document.getElementById('low-battery-alert')?.classList.add('hidden');
-      break;
-    case 'selectAllOnline': selectAllOnline(); break;
-    case 'selectCurrentGroup': selectCurrentGroup(); break;
-    case 'selectAllIdle': selectAllIdle(); break;
-    case 'selectAllRunning': selectAllRunning(); break;
-    case 'clearSelection': clearSelection(); break;
-    case 'batchAction': batchAction(arg); break;
-    case 'promptBatchSystem': promptBatchSystem(arg); break;
-    case 'executeBatchSystemConfirmed': executeBatchSystemConfirmed(); break;
-    case 'copyCurrentSn': copyCurrentSn(); break;
-    case 'toggleLiveStream': toggleLiveStream(); break;
-    case 'singleDeviceAction': singleDeviceAction(arg); break;
-    case 'openCurrentAliasModal': openCurrentAliasModal(); break;
-    case 'switchConfigTab': switchConfigTab(arg); break;
-    case 'openAddProjectForm': openAddProjectForm(); break;
-    case 'openEditProjectForm': openEditProjectForm(arg); break;
-    case 'openConfigAndEditProject':
-      openConfigModal('app');
-      openEditProjectForm(arg);
-      break;
-    case 'closeProjectForm': closeProjectForm(); break;
-    case 'submitProjectForm': submitProjectForm(); break;
-    case 'deleteProject': deleteProject(arg); break;
-    case 'openBindHeadsetForm': openBindHeadsetForm(); break;
-    case 'closeBindHeadsetForm': closeBindHeadsetForm(); break;
-    case 'submitBindHeadsetForm': submitBindHeadsetForm(); break;
-    case 'openAliasModal': openAliasModal(arg, arg2); break;
-    case 'submitAliasModal': submitAliasModal(); break;
-    case 'unbindHeadset': unbindHeadset(arg); break;
-    case 'sendTestUdpMessage': sendTestUdpMessage(); break;
-    case 'setPicoServiceMode': setPicoServiceMode(arg === 'true'); break;
-    case 'restartPicoService': restartPicoService(); break;
-    case 'loadPicoServiceStatus': loadPicoServiceStatus(); break;
-    case 'switchAdbTab': switchAdbTab(arg); break;
-    case 'startAdbScan': startAdbScan(); break;
-    case 'loadAdbDevices': loadAdbDevices(); break;
-    case 'syncAdbDevicesToConfig': syncAdbDevicesToConfig(); break;
-    case 'connectManualAdb': connectManualAdb(); break;
-    case 'readAdbSn': readAdbSn(arg); break;
-    case 'rebootAdb': rebootAdb(arg); break;
-    case 'disconnectAdb': disconnectAdb(arg); break;
-    case 'toggleSelectAllDeployDevices': toggleSelectAllDeployDevices(arg === 'true'); break;
-    case 'executeDeployInstallApk': executeDeployInstallApk(); break;
-    case 'setDeployRemotePath': {
-      const el = document.getElementById('deploy-push-remote');
-      if (el) el.value = arg;
-      break;
-    }
-    case 'executeDeployPushFile': executeDeployPushFile(); break;
-    case 'executeDeployCreateFolder': executeDeployCreateFolder(); break;
-    case 'queryDeployPackages': queryDeployPackages(); break;
-    case 'executeDeployUninstallApp': executeDeployUninstallApp(); break;
-    case 'toggleDeployLogHeight': toggleDeployLogHeight(); break;
-    case 'copyDeployLog': copyDeployLog(); break;
-    case 'clearDeployLog': clearDeployLog(); break;
-    case 'openNewGroupForm': openNewGroupForm(); break;
-    case 'editGroup': editGroup(arg); break;
-    case 'deleteGroup': deleteGroup(arg); break;
-    case 'cancelGroupForm': cancelGroupForm(); break;
-    case 'saveGroupFromForm': saveGroupFromForm(); break;
-    case 'toggleAllGroupDevices': toggleAllGroupDevices(arg === 'true'); break;
-    case 'reconnectSuiteSdk': reconnectSuiteSdk(); break;
-    case 'toggleDeviceSelect': toggleDeviceSelect(arg); break;
-    case 'selectMonitorDevice': selectMonitorDevice(arg); break;
-    default: break;
-  }
-});
-
-document.addEventListener('change', (e) => {
-  const el = e.target;
-  const action = el?.dataset?.change;
-  if (!action) return;
-  switch (action) {
-    case 'applyGlobalVolume': applyGlobalVolume(el.value, true); break;
-    case 'onTestUdpActionChange': onTestUdpActionChange(el.value); break;
-    case 'saveDeviceProject': saveDeviceProject(el.dataset.arg || '', el.value); break;
-    case 'updateDeploySelectedCount': updateDeploySelectedCount(); break;
-    case 'selectDeployUninstallPkg':
-      if (el.value) {
-        const input = document.getElementById('deploy-uninstall-pkg');
-        if (input) input.value = el.value;
-      }
-      break;
-    default: break;
-  }
-});
-
-document.addEventListener('input', (e) => {
-  const el = e.target;
-  const action = el?.dataset?.input;
-  if (!action) return;
-  switch (action) {
-    case 'onGlobalVolumeInput': onGlobalVolumeInput(el.value); break;
-    case 'updateTestUdpPreview': updateTestUdpPreview(); break;
-    case 'onUiScaleSliderInput': onUiScaleSliderInput(el.value); break;
-    case 'onFontScaleSliderInput': onFontScaleSliderInput(el.value); break;
-    default: break;
-  }
-});
-
-// ======================== Toast & 轻量音效 ========================
+// 音效上下文
 let audioCtx = null;
 function playSound(type = 'click') {
   try {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') audioCtx.resume();
+
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
     osc.connect(gain);
     gain.connect(audioCtx.destination);
+
     const now = audioCtx.currentTime;
     if (type === 'click') {
-      osc.frequency.setValueAtTime(760, now);
-      osc.frequency.exponentialRampToValueAtTime(420, now + 0.045);
-      gain.gain.setValueAtTime(0.08, now);
-      gain.gain.exponentialRampToValueAtTime(0.005, now + 0.045);
+      osc.frequency.setValueAtTime(800, now);
+      osc.frequency.exponentialRampToValueAtTime(400, now + 0.05);
+      gain.gain.setValueAtTime(0.12, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.05);
       osc.start(now);
-      osc.stop(now + 0.045);
+      osc.stop(now + 0.05);
     } else if (type === 'success') {
       osc.frequency.setValueAtTime(523.25, now);
-      osc.frequency.setValueAtTime(659.25, now + 0.07);
-      osc.frequency.setValueAtTime(783.99, now + 0.14);
-      gain.gain.setValueAtTime(0.1, now);
-      gain.gain.exponentialRampToValueAtTime(0.005, now + 0.24);
+      osc.frequency.setValueAtTime(659.25, now + 0.08);
+      osc.frequency.setValueAtTime(783.99, now + 0.16);
+      gain.gain.setValueAtTime(0.15, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.28);
       osc.start(now);
-      osc.stop(now + 0.24);
+      osc.stop(now + 0.28);
     } else if (type === 'warning') {
       osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(300, now);
-      osc.frequency.setValueAtTime(240, now + 0.09);
-      gain.gain.setValueAtTime(0.08, now);
-      gain.gain.exponentialRampToValueAtTime(0.005, now + 0.2);
+      osc.frequency.setValueAtTime(320, now);
+      osc.frequency.setValueAtTime(260, now + 0.1);
+      gain.gain.setValueAtTime(0.15, now);
+      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.25);
       osc.start(now);
-      osc.stop(now + 0.2);
+      osc.stop(now + 0.25);
     }
-  } catch { }
+  } catch (e) { }
 }
 
-function showToast(msg, icon = '✓') {
-  const toast = document.getElementById('toast');
-  const iconEl = document.getElementById('toast-icon');
-  const msgEl = document.getElementById('toast-msg');
-  if (!toast || !msgEl) return;
-  if (iconEl) iconEl.textContent = icon === 'warning' ? '⚠️' : (icon === 'info' ? 'ℹ️' : icon);
-  msgEl.textContent = msg;
-  toast.classList.add('toast--show');
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toast.classList.remove('toast--show'), 3200);
-}
-
-// ======================== 初始化 ========================
-async function resolveRuntimeConfig() {
-  if (IS_TAURI_ENV) {
-    try {
-      const invoke = window.__TAURI__?.core?.invoke;
-      if (typeof invoke === 'function') {
-        const info = await invoke('get_runtime_info');
-        if (info && info.webPort) {
-          LOCAL_PORT = info.webPort;
-        }
-      }
-    } catch (e) {
-      console.warn('get_runtime_info fallback:', e);
-    }
-  }
-
-  // 读取用户上次保存的连接模式（local / remote）
-  const savedMode = localStorage.getItem('pico-conn-mode');
-  const savedHost = localStorage.getItem('pico-remote-host') || '';
-  const savedPort = parseInt(localStorage.getItem('pico-remote-port') || '8999', 10) || 8999;
-  if (savedMode === 'remote' && savedHost) {
-    CONN_MODE = 'remote';
-    REMOTE_HOST = savedHost;
-    REMOTE_PORT = savedPort;
-  } else {
-    CONN_MODE = 'local';
-  }
-  updateConnectionBase();
-
-  try {
-    const res = await fetch('/api/system/network');
-    if (res.ok) {
-      const net = await res.json();
-      if (net.primaryUrl) {
-        PRIMARY_LAN_URL = net.primaryUrl;
-        const pill = document.getElementById('lan-url-pill');
-        safeSetText('lan-url-text', net.primaryUrl.replace(/^http:\/\//, ''));
-        if (pill) pill.classList.remove('hidden');
-      }
-    }
-  } catch { }
-}
-
-function openConnModeModal() {
-  safeSetText('conn-local-port', String(LOCAL_PORT));
-  const ipEl = document.getElementById('conn-remote-ip');
-  const portEl = document.getElementById('conn-remote-port');
-  if (ipEl) ipEl.value = REMOTE_HOST || localStorage.getItem('pico-remote-host') || '';
-  if (portEl) portEl.value = String(REMOTE_PORT || 8999);
-  const st = document.getElementById('conn-remote-status');
-  if (st) st.classList.add('hidden');
-  renderConnHistory();
-  document.getElementById('conn-mode-modal')?.classList.remove('hidden');
-}
-
-function renderConnHistory() {
-  const wrap = document.getElementById('conn-history-wrap');
-  if (!wrap) return;
-  let history = [];
-  try {
-    history = JSON.parse(localStorage.getItem('pico-remote-history') || '[]');
-  } catch { history = []; }
-  if (!Array.isArray(history) || history.length === 0) {
-    wrap.classList.add('hidden');
-    wrap.innerHTML = '';
-    return;
-  }
-  wrap.classList.remove('hidden');
-  wrap.innerHTML = '<span class="panel-sub">最近连接:</span>' + history.map(item =>
-    `<button type="button" class="btn btn--xs mono" data-action="selectRemoteHistory" data-arg="${escapeHtml(item)}">${escapeHtml(item)}</button>`
-  ).join('');
-}
-
-function resetAndReconnectWorkspace() {
-  if (isStreamingActive && currentMonitorSn) {
-    stopLiveStreamInternal(currentMonitorSn);
-  }
-  devices.clear();
-  selectedSns.clear();
-  currentMonitorSn = null;
-  if (realtimeSocket) {
-    try { realtimeSocket.close(); } catch { }
-    realtimeSocket = null;
-  }
-  loadConfig();
-  loadDevices();
-  initRealtimeSocket();
-  checkSuiteHealthBackground();
-}
-
-async function switchToLocalMode() {
-  CONN_MODE = 'local';
-  localStorage.setItem('pico-conn-mode', 'local');
-  updateConnectionBase();
-  closeModalById('conn-mode-modal');
-  resetAndReconnectWorkspace();
-  showToast(`已切换至当前本地模式 (127.0.0.1:${LOCAL_PORT})`, '💻');
-}
-
-async function connectRemoteService() {
-  const ip = (document.getElementById('conn-remote-ip')?.value || '').trim();
-  const port = parseInt(document.getElementById('conn-remote-port')?.value || '8999', 10) || 8999;
-  const statusEl = document.getElementById('conn-remote-status');
-  const btn = document.getElementById('btn-connect-remote-mode');
-
-  if (!ip) {
-    showToast('请输入远程服务端 IP 地址', '⚠️');
-    return;
-  }
-
-  if (btn) btn.disabled = true;
-  if (statusEl) {
-    statusEl.className = 'panel-sub text-accent';
-    statusEl.textContent = `⏳ 正在探测 http://${ip}:${port}/api/system/health ...`;
-    statusEl.classList.remove('hidden');
-  }
-
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3500);
-    const res = await originalFetch(`http://${ip}:${port}/api/system/health`, { signal: controller.signal });
-    clearTimeout(timer);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-    CONN_MODE = 'remote';
-    REMOTE_HOST = ip;
-    REMOTE_PORT = port;
-    localStorage.setItem('pico-conn-mode', 'remote');
-    localStorage.setItem('pico-remote-host', ip);
-    localStorage.setItem('pico-remote-port', String(port));
-
-    // 记录最近连接历史
-    let history = [];
-    try { history = JSON.parse(localStorage.getItem('pico-remote-history') || '[]'); } catch { history = []; }
-    const entry = `${ip}:${port}`;
-    history = [entry, ...history.filter(x => x !== entry)].slice(0, 4);
-    localStorage.setItem('pico-remote-history', JSON.stringify(history));
-
-    updateConnectionBase();
-    closeModalById('conn-mode-modal');
-    resetAndReconnectWorkspace();
-    showToast(`已连接远程服务 ${ip}:${port}`, '🌐');
-  } catch (err) {
-    if (statusEl) {
-      statusEl.className = 'panel-sub text-rose';
-      statusEl.textContent = `❌ 连接失败 (${err.message || '超时或服务未开启'})，请确认对方机器已启动服务且防火墙放行 ${port} 端口`;
-      statusEl.classList.remove('hidden');
-    }
-  } finally {
-    if (btn) btn.disabled = false;
-  }
-}
-
-function copyLanUrl() {
-  if (!PRIMARY_LAN_URL) return;
-  navigator.clipboard.writeText(PRIMARY_LAN_URL).then(() => {
-    showToast(`已复制平板局域网地址: ${PRIMARY_LAN_URL}`, '📡');
-  });
-}
-
+// 页面加载初始化
 window.addEventListener('DOMContentLoaded', async () => {
-  initTheme();
-  initWallpapers();
-  await resolveRuntimeConfig();
   await loadConfig();
   await loadDevices();
-  initRealtimeSocket();
-  setInterval(loadDevices, 2500);
-  setInterval(loadConfig, 15000);
+  initSignalR();
   startCanvasSimulation();
   checkSuiteHealthBackground();
   setInterval(checkSuiteHealthBackground, 5000);
 });
 
-// ======================== WebSocket 实时通道 ========================
-function setSystemStatusPill(variant, text) {
-  const pill = document.getElementById('system-status-pill');
-  const txt = document.getElementById('system-status-text');
-  if (!pill || !txt) return;
-  pill.className = `status-pill status-pill--${variant}`;
-  txt.textContent = text;
-}
+// ======================== 1. SignalR 实时长连接 ========================
+function initSignalR() {
+  const statusPill = document.getElementById('system-status-pill');
+  const statusText = document.getElementById('system-status-text');
 
-function initRealtimeSocket() {
-  if (wsReconnectTimer) {
-    clearTimeout(wsReconnectTimer);
-    wsReconnectTimer = null;
-  }
-  if (realtimeSocket && (realtimeSocket.readyState === WebSocket.OPEN || realtimeSocket.readyState === WebSocket.CONNECTING)) {
-    return;
-  }
-  if (typeof WebSocket === 'undefined') {
-    setSystemStatusPill('warn', 'HTTP 轮询模式');
+  if (typeof signalR === 'undefined') {
+    console.warn('SignalR 客户端库未加载，自动降级至 HTTP 轮询模式');
+    if (statusPill && statusText) {
+      statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-medium flex items-center gap-1';
+      statusText.innerText = 'HTTP 轮询模式 (纯离线)';
+    }
+    setInterval(loadDevices, 3000);
     return;
   }
 
-  try {
-    realtimeSocket = new WebSocket(wsUrl('/ws/pico'));
-    realtimeSocket.onopen = () => {
-      wsReconnectAttempts = 0;
-      setSystemStatusPill('online', `后台在线 · ${RUNTIME_PORT}`);
-      loadDevices();
-    };
-    realtimeSocket.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (!msg || !msg.type) return;
-        if (msg.type === 'DeviceAdded' || msg.type === 'DeviceUpdated') {
-          const dev = msg.data;
-          if (dev && dev.sn) {
-            devices.set(dev.sn, dev);
-            renderMatrix();
-            updateTopStats();
-            if (currentMonitorSn === dev.sn) refreshMonitorTelemetry(dev);
-          }
-        } else if (msg.type === 'DeviceRemoved') {
-          const sn = msg.data;
-          if (sn) {
-            devices.delete(sn);
-            selectedSns.delete(sn);
-            renderMatrix();
-            updateTopStats();
-            if (currentMonitorSn === sn) {
-              const first = Array.from(devices.values())[0];
-              if (first) selectMonitorDevice(first.sn);
-            }
-          }
-        } else if (msg.type === 'UdpCommandReceived') {
-          const info = msg.data || {};
-          playSound(info.success ? 'success' : 'warning');
-          showToast(`[UDP] ${info.message || ''}`, info.success ? '📡' : '⚠️');
-        }
-      } catch { }
-    };
-    realtimeSocket.onerror = () => setSystemStatusPill('warn', '实时通道重连中...');
-    realtimeSocket.onclose = () => {
-      realtimeSocket = null;
-      const delays = [1500, 3000, 5000, 10000];
-      const delay = delays[Math.min(wsReconnectAttempts++, delays.length - 1)];
-      setSystemStatusPill('error', '服务重连中...');
-      wsReconnectTimer = setTimeout(initRealtimeSocket, delay);
-    };
-  } catch {
-    setSystemStatusPill('warn', 'HTTP 轮询模式');
-    wsReconnectTimer = setTimeout(initRealtimeSocket, 5000);
-  }
+  hubConnection = new signalR.HubConnectionBuilder()
+    .withUrl(apiUrl('/hubs/pico'))
+    .withAutomaticReconnect([0, 2000, 5000, 10000, 30000])
+    .build();
+
+  hubConnection.on('DeviceAdded', (dev) => {
+    devices.set(dev.sn, dev);
+    renderMatrix();
+    updateTopStats();
+    if (currentMonitorSn === dev.sn) refreshMonitorTelemetry(dev);
+  });
+
+  hubConnection.on('DeviceUpdated', (dev) => {
+    devices.set(dev.sn, dev);
+    renderMatrix();
+    updateTopStats();
+    if (currentMonitorSn === dev.sn) refreshMonitorTelemetry(dev);
+  });
+
+  hubConnection.on('DeviceRemoved', (sn) => {
+    devices.delete(sn);
+    selectedSns.delete(sn);
+    renderMatrix();
+    updateTopStats();
+    if (currentMonitorSn === sn) {
+      const first = Array.from(devices.values())[0];
+      if (first) selectMonitorDevice(first.sn);
+    }
+  });
+
+  hubConnection.on('UdpCommandReceived', (info) => {
+    playSound(info.success ? 'success' : 'warning');
+    showToast(`📡 [UDP指令] ${info.message}`, info.success ? 'info' : 'warning');
+  });
+
+  hubConnection.onreconnecting(() => {
+    statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-medium flex items-center gap-1';
+    statusText.innerText = '长连接重新连接中...';
+  });
+
+  hubConnection.onreconnected(() => {
+    statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200 font-medium flex items-center gap-1';
+    statusText.innerText = '系统服务在线';
+    loadDevices();
+  });
+
+  hubConnection.onclose(() => {
+    statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-rose-50 text-rose-600 border border-rose-200 font-medium flex items-center gap-1';
+    statusText.innerText = '服务已断开，尝试重连...';
+    setTimeout(() => initSignalR(), 3000);
+  });
+
+  hubConnection.start()
+    .then(() => {
+      statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-200 font-medium flex items-center gap-1';
+      statusText.innerText = '系统服务在线 (端口 8999)';
+    })
+    .catch(err => {
+      console.warn('SignalR start error:', err);
+      statusPill.className = 'text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200 font-medium flex items-center gap-1';
+      statusText.innerText = 'HTTP 轮询模式';
+    });
 }
 
-// ======================== 数据拉取与渲染 ========================
+// ======================== 2. 数据拉取与渲染 ========================
 async function loadConfig() {
   try {
     const res = await fetch('/api/config');
     if (res.ok) {
-      systemConfig = await res.json();
-      projects = systemConfig.projects || [];
-      if (!currentProject && projects.length > 0) {
-        currentProject = projects[0];
-      } else if (currentProject) {
-        currentProject = projects.find(p => p.id === currentProject.id) || projects[0] || null;
-      }
+      const cfg = await res.json();
+      systemConfig = cfg;
+      projects = cfg.projects || [];
       renderProjects();
-      renderGroupTabs();
-      updateGroupQuickSelectButton();
     }
   } catch (e) {
     console.error('loadConfig error:', e);
@@ -756,17 +197,14 @@ async function loadDevices() {
   try {
     const res = await fetch('/api/devices');
     if (res.ok) {
-      const list = await res.json();
+      const devList = await res.json();
       devices.clear();
-      list.forEach(d => devices.set(d.sn, d));
-      renderGroupTabs();
+      devList.forEach(d => devices.set(d.sn, d));
       renderMatrix();
       updateTopStats();
-      updateGroupQuickSelectButton();
-      if (!currentMonitorSn && list.length > 0) {
-        selectMonitorDevice(list[0].sn);
-      } else if (currentMonitorSn && devices.has(currentMonitorSn)) {
-        refreshMonitorTelemetry(devices.get(currentMonitorSn));
+
+      if (!currentMonitorSn && devList.length > 0) {
+        selectMonitorDevice(devList[0].sn);
       }
     }
   } catch (e) {
@@ -774,348 +212,367 @@ async function loadDevices() {
   }
 }
 
+// 渲染第一步：体验项目海报卡片
 function renderProjects() {
   const container = document.getElementById('project-cards-container');
-  if (!container) return;
   container.innerHTML = '';
 
   if (projects.length === 0) {
-    container.innerHTML = '<div class="panel-sub" style="grid-column: 1 / -1; text-align: center; padding: 1rem;">暂无体验项目，请点击右上角「管理项目与包名」添加</div>';
+    container.innerHTML = '<div class="col-span-full py-4 text-center text-slate-400 text-xs">暂无配置的项目，请点击右上角新增项目</div>';
     return;
   }
 
-  projects.forEach(proj => {
-    const isActive = currentProject && currentProject.id === proj.id;
-    const wp = matchWallpaperForProject(proj);
+  if (!currentProject && projects.length > 0) {
+    currentProject = projects[0];
+  }
+
+  projects.forEach((proj) => {
+    const isSelected = currentProject && currentProject.id === proj.id;
     const card = document.createElement('div');
-    card.className = `project-card${isActive ? ' project-card--active' : ''}`;
-    card.onclick = () => {
-      currentProject = proj;
-      playSound('click');
-      setWallpaperByUrl(wp.url);
-      renderProjects();
-    };
+    card.id = `proj-card-${proj.id}`;
+    card.onclick = () => selectProject(proj.id);
+
+    let borderClass = isSelected
+      ? 'border-2 border-blue-600 bg-blue-50/70 shadow-md'
+      : 'border border-slate-200 bg-white hover:border-slate-300';
+
+    card.className = `project-card relative rounded-xl p-3.5 cursor-pointer transition flex items-center gap-3 ${borderClass}`;
     card.innerHTML = `
-      <div class="project-card__bg" style="background-image: url('${wp.url}')"></div>
-      <div class="project-card__scrim"></div>
-      <div class="project-card__top">
-        <span class="project-card__icon">${escapeHtml(proj.icon || '🎮')}</span>
-        <div class="project-card__meta">
-          <span class="status-pill">${proj.type === 'vr_video' ? '视频' : '应用'} · ${escapeHtml(proj.durationMinutes || 15)}m</span>
-          <button type="button" class="project-card__edit" title="编辑项目" data-action="openConfigAndEditProject" data-arg="${escapeHtml(proj.id)}" data-stop="1">✏️</button>
-        </div>
+      <div class="w-14 h-14 rounded-xl bg-gradient-to-tr from-indigo-900 via-blue-900 to-indigo-700 text-2xl flex items-center justify-center flex-shrink-0 shadow-sm border border-blue-200">
+        ${proj.icon || '🎮'}
       </div>
-      <div class="project-card__title" title="${escapeHtml(proj.name)}">${escapeHtml(proj.name)}</div>
-      <div class="project-card__pkg" title="${escapeHtml(proj.packageName)}">${escapeHtml(proj.packageName)}</div>
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center justify-between">
+          <span class="text-[10px] px-1.5 py-0.2 rounded font-semibold ${isSelected ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'}">
+            ${isSelected ? '当前选定' : proj.type === 'vr_video' ? '全景视频' : 'VR应用'}
+          </span>
+          <div class="flex items-center gap-1.5">
+            <span class="text-[11px] font-mono ${isSelected ? 'text-blue-700 font-bold' : 'text-slate-500 font-medium'}">${proj.durationMinutes} 分钟</span>
+            <button onclick="event.stopPropagation(); openEditProjectFromCard('${proj.id}')" title="修改此项目包名/名称/时长" class="w-5 h-5 rounded hover:bg-blue-100 text-slate-400 hover:text-blue-700 flex items-center justify-center text-xs transition" style="pointer-events: auto;">
+              ✏️
+            </button>
+          </div>
+        </div>
+        <h3 class="font-bold text-sm text-slate-900 truncate mt-0.5">${proj.name}</h3>
+        <p class="text-[11px] text-slate-400 font-mono truncate" title="${proj.packageName}">${proj.packageName}</p>
+      </div>
     `;
     container.appendChild(card);
   });
 }
 
-function isDeviceInGroup(dev, group) {
-  if (!group || !Array.isArray(group.deviceIdentifiers)) return false;
-  return group.deviceIdentifiers.some(id =>
-    id === dev.sn || id === dev.alias || id === dev.suiteNo || id === dev.displayName
-  );
-}
-
-function getFilteredDevices() {
-  const all = Array.from(devices.values()).sort((a, b) => {
-    const numA = parseInt((a.alias || '').replace(/\D/g, ''), 10) || 9999;
-    const numB = parseInt((b.alias || '').replace(/\D/g, ''), 10) || 9999;
-    if (numA !== numB) return numA - numB;
-    return (a.displayName || a.sn).localeCompare(b.displayName || b.sn);
-  });
-  if (currentActiveGroupId === 'all' || !systemConfig?.groups) return all;
-  const grp = systemConfig.groups.find(g => g.id === currentActiveGroupId);
-  if (!grp) return all;
-  return all.filter(d => isDeviceInGroup(d, grp));
-}
-
-function renderGroupTabs() {
-  const container = document.getElementById('device-group-tabs');
-  if (!container) return;
-  container.innerHTML = '';
-
-  const allBtn = document.createElement('button');
-  allBtn.type = 'button';
-  allBtn.className = `group-tab${currentActiveGroupId === 'all' ? ' group-tab--active' : ''}`;
-  allBtn.onclick = () => switchGroupTab('all');
-  allBtn.innerHTML = `<span>🌐 全部设备</span><span class="group-tab__count">${devices.size}</span>`;
-  container.appendChild(allBtn);
-
-  const groups = systemConfig?.groups || [];
-  groups.forEach(g => {
-    const count = Array.from(devices.values()).filter(d => isDeviceInGroup(d, g)).length;
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = `group-tab${currentActiveGroupId === g.id ? ' group-tab--active' : ''}`;
-    btn.onclick = () => switchGroupTab(g.id);
-    btn.innerHTML = `<span>🏷️ ${escapeHtml(g.name)}</span><span class="group-tab__count">${count}</span>`;
-    container.appendChild(btn);
-  });
-}
-
-function switchGroupTab(groupId) {
-  currentActiveGroupId = groupId;
+function selectProject(projId) {
   playSound('click');
-  if (groupId !== 'all') {
-    const grp = (systemConfig?.groups || []).find(g => g.id === groupId);
-    if (grp?.defaultProjectId) {
-      const p = projects.find(x => x.id === grp.defaultProjectId || x.packageName === grp.defaultProjectId);
-      if (p) {
-        currentProject = p;
-        renderProjects();
-      }
-    }
-  }
-  renderGroupTabs();
-  renderMatrix();
-  updateGroupQuickSelectButton();
-}
-
-function updateGroupQuickSelectButton() {
-  const btn = document.getElementById('btn-select-group');
-  if (!btn) return;
-  if (currentActiveGroupId === 'all') {
-    btn.classList.add('hidden');
-  } else {
-    btn.classList.remove('hidden');
-    const onlineInGroup = getFilteredDevices().filter(d => d.online).length;
-    safeSetText('btn-total-group', onlineInGroup);
+  currentProject = projects.find(p => p.id === projId) || null;
+  renderProjects();
+  if (currentProject) {
+    showToast(`已选定体验内容：【${currentProject.name}】`);
   }
 }
 
+function openEditProjectFromCard(projId) {
+  playSound('click');
+  openConfigModal('app');
+  setTimeout(() => {
+    openEditProjectForm(projId);
+  }, 100);
+}
+
+// 渲染第二步：设备矩阵
 function renderMatrix() {
   const matrix = document.getElementById('device-matrix');
-  if (!matrix) return;
   matrix.innerHTML = '';
 
-  const list = getFilteredDevices();
-  if (list.length === 0) {
+  const devArray = Array.from(devices.values()).sort((a, b) => {
+    const numA = parseInt(a.alias.replace(/\D/g, '')) || 999;
+    const numB = parseInt(b.alias.replace(/\D/g, '')) || 999;
+    return numA - numB;
+  });
+
+  if (devArray.length === 0) {
     matrix.innerHTML = `
-      <div class="panel-sub" style="grid-column: 1 / -1; text-align: center; padding: 2.2rem 1rem;">
-        暂无设备。请确认 PICO Business Suite 已登录且头显接入同一局域网，或点击右上角「配置中心」绑定头显 SN。
-      </div>`;
-    safeSetText('selected-badge', selectedSns.size);
+      <div class="col-span-full py-12 flex flex-col items-center justify-center text-center p-6 bg-white border-2 border-dashed border-slate-200 rounded-2xl">
+        <div class="w-14 h-14 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center text-2xl mb-3 shadow-inner">
+          👓
+        </div>
+        <h3 class="text-sm font-bold text-slate-800">等待真实 PICO 头显连入局域网...</h3>
+        <p class="text-xs text-slate-500 max-w-md mt-1.5 leading-relaxed">
+          1. 确保本电脑已启动 <b>PICO Business Suite (官方企业套件)</b> 并登录<br/>
+          2. 将 PICO 头戴开机并连接同一店内 Wi-Fi (建议 5GHz 无 AP 隔离)<br/>
+          3. 可在右上角「绑定头显」预设机器编号与 SN 码，开机后自动点亮
+        </p>
+      </div>
+    `;
+    document.getElementById('selected-badge').innerText = 0;
     return;
   }
 
-  list.forEach(dev => {
+  devArray.forEach(dev => {
     const isSelected = selectedSns.has(dev.sn);
-    const isMonitoring = currentMonitorSn === dev.sn;
-    const isRunning = dev.online && !isDesktopApp(dev.currentApp);
-    const isLow = dev.online && dev.battery > 0 && dev.battery < 30;
+    const isMonitored = currentMonitorSn === dev.sn;
+    const isTrackingLost = dev.online && (dev.trackingLost || (dev.currentApp && dev.currentApp.toLowerCase().includes('seethrough.setting')));
+    const isRunning = dev.online && !isTrackingLost && !isDesktopApp(dev.currentApp);
+    const isLow = dev.online && dev.battery > 0 && dev.battery <= 30;
 
-    let badgeClass = 'status-pill';
-    let badgeText = '离线';
-    if (dev.online) {
-      if (dev.trackingLost) {
-        badgeClass = 'status-pill status-pill--error';
-        badgeText = '定位丢失';
-      } else if (isRunning) {
-        badgeClass = 'status-pill status-pill--info';
-        badgeText = '体验中';
-      } else {
-        badgeClass = 'status-pill status-pill--online';
-        badgeText = '空闲就绪';
-      }
+    // 默认状态与背景
+    let cardBg = 'bg-white hover:bg-slate-50 border-slate-200 text-slate-800 shadow-sm';
+    let badgeBg = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+    let badgeText = '空闲';
+
+    if (!dev.online) {
+      cardBg = 'bg-slate-100/70 border-slate-200 text-slate-400 opacity-60';
+      badgeBg = 'bg-slate-200 text-slate-500 border-slate-300';
+      badgeText = '离线';
+    } else if (isTrackingLost) {
+      cardBg = 'bg-amber-50 hover:bg-amber-100/80 border-2 border-amber-500 text-amber-950 shadow-md ring-2 ring-amber-400/50 animate-pulse';
+      badgeBg = 'bg-amber-500 text-white border-amber-600 font-bold';
+      badgeText = '⚠️ 定位丢失';
+    } else if (isRunning) {
+      cardBg = 'bg-blue-600 hover:bg-blue-700 border-blue-600 text-white shadow-md shadow-blue-500/20';
+      badgeBg = 'bg-blue-700/80 text-blue-100 border-blue-500';
+      badgeText = '体验中';
+    } else if (isLow) {
+      cardBg = 'bg-amber-50 hover:bg-amber-100/70 border-amber-300 text-amber-900';
+      badgeBg = 'bg-amber-200 text-amber-900 border-amber-300';
+      badgeText = '低电';
     }
 
-    const batPct = dev.online ? Math.min(100, Math.max(0, dev.battery || 0)) : 0;
-    const batClass = isLow ? 'battery-fill--low' : (batPct < 55 ? 'battery-fill--mid' : '');
+    // 选中高亮状态
+    let selectHighlight = '';
+    if (isSelected) {
+      selectHighlight = 'ring-4 ring-amber-400 border-amber-400 shadow-xl';
+    }
+
+    let monitorHighlight = '';
+    if (isMonitored && !isSelected) {
+      monitorHighlight = 'border-2 border-cyan-400 ring-2 ring-cyan-400/50';
+    }
+
+    const tagBadge = dev.online
+      ? `<span class="text-[9px] px-1 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold">🟢在线</span>`
+      : `<span class="text-[9px] px-1 py-0.5 rounded bg-slate-100 text-slate-500 border border-slate-200">⚪离线</span>`;
 
     const card = document.createElement('div');
-    card.className = [
-      'device-card',
-      isSelected ? 'device-card--selected' : '',
-      isMonitoring ? 'device-card--monitoring' : '',
-      !dev.online ? 'device-card--offline' : ''
-    ].filter(Boolean).join(' ');
+    card.className = `relative rounded-xl border p-2.5 flex flex-col justify-between cursor-pointer transition-all select-none ${cardBg} ${selectHighlight} ${monitorHighlight}`;
 
-    card.onclick = () => {
-      if (selectedSns.has(dev.sn)) selectedSns.delete(dev.sn);
-      else selectedSns.add(dev.sn);
-      playSound('click');
-      renderMatrix();
+    // 点击卡片直接切换选中，并激活右侧监控面板
+    card.onclick = (e) => {
+      if (e.target.closest('.action-btn')) return;
+      toggleSelectDevice(dev.sn);
+      selectMonitorDevice(dev.sn);
     };
 
+    const ctrlText = !dev.online
+      ? '🎮 未连接'
+      : `🎮 L:${dev.controllerLeftBattery}% R:${dev.controllerRightBattery}%`;
+
+    const displayTitle = dev.displayName || dev.sn;
+    const suiteBadge = dev.suiteNo ? `<span class="inline-block text-[9px] px-1.5 py-0.2 rounded bg-indigo-100 text-indigo-800 border border-indigo-200 font-bold" title="PICO 企业套件编号">套件#${dev.suiteNo}</span>` : '';
+    const screenTag = dev.online && dev.screenOn === false ? `<span class="text-[9px] px-1 py-0.2 rounded bg-slate-800 text-slate-200 font-bold" title="屏幕已熄灭">🌑息屏</span>` : '';
+
     card.innerHTML = `
-      <div class="device-card__head">
-        <div class="device-card__id">
-          <input type="checkbox" ${isSelected ? 'checked' : ''} data-action="toggleDeviceSelect" data-arg="${escapeHtml(dev.sn)}" data-stop="1" aria-label="选择设备 ${escapeHtml(dev.displayName)}">
-          <span class="device-card__name" title="${escapeHtml(dev.displayName)}">${escapeHtml(dev.displayName)}</span>
+      <!-- 顶栏：复选框 + 头显电量 + 状态徽章 -->
+      <div class="flex items-center justify-between text-[11px] font-mono leading-none">
+        <div class="flex items-center gap-1.5">
+          <input type="checkbox" ${isSelected ? 'checked' : ''} class="w-4 h-4 rounded text-blue-600 accent-blue-600 cursor-pointer pointer-events-none" />
+          <span class="flex items-center gap-0.5 font-bold ${isRunning ? 'text-blue-100' : isLow ? 'text-rose-600' : 'text-slate-700'}">
+            ${dev.isCharging ? '⚡' : '🔋'}${!dev.online ? '--' : dev.battery + '%'}
+          </span>
+          ${screenTag}
         </div>
-        <span class="${badgeClass}"><span class="dot"></span>${badgeText}</span>
-      </div>
-
-      <div class="device-card__sn">SN: ${escapeHtml(dev.sn.slice(-8))} ${dev.suiteNo ? `· 套件 #${escapeHtml(dev.suiteNo)}` : ''}</div>
-
-      <div class="device-card__app" title="${escapeHtml(dev.appTitle || dev.currentApp)}">
-        ${dev.trackingLost ? '⚠️ 大空间定位丢失' : (isRunning ? `🎮 ${escapeHtml(dev.appTitle || dev.currentApp)}` : '🏠 系统桌面')}
-      </div>
-
-      <div class="device-card__foot">
-        <div class="battery-bar">
-          <span class="mono ${isLow ? 'text-rose' : 'text-secondary'}">${dev.online ? `${batPct}%` : '--'}</span>
-          <div class="battery-track"><div class="battery-fill ${batClass}" style="inline-size: ${batPct}%"></div></div>
+        <div class="flex items-center gap-1">
+          ${tagBadge}
+          <span class="px-1.5 py-0.5 rounded text-[10px] font-sans font-semibold border ${badgeBg}">
+            ${badgeText}
+          </span>
         </div>
-        <button type="button" class="btn btn--xs" data-action="selectMonitorDevice" data-arg="${escapeHtml(dev.sn)}" data-stop="1" title="在右侧查看实时画面与详情">👁 监看</button>
       </div>
+
+      <!-- 中部机号/别名与套件编号 -->
+      <div class="py-1 text-center">
+        <span class="text-xl sm:text-2xl font-black tracking-tight font-mono block truncate">${displayTitle}</span>
+        <div class="flex items-center justify-center gap-1 mt-0.5">
+          ${suiteBadge}
+          <span class="text-[9px] font-mono opacity-70 truncate tracking-tighter" title="${dev.sn}">SN:${dev.sn.slice(-8)}</span>
+        </div>
+        ${isTrackingLost ? '<div class="text-[10px] text-amber-900 font-bold bg-amber-200/90 rounded py-0.5 px-1 mt-1 text-center">⚠️ 大空间定位丢失 (透视中)</div>' : ''}
+      </div>
+
+      <!-- 手柄电量醒目条 -->
+      <div class="px-1.5 py-0.5 rounded text-[10px] font-mono text-center mb-1 ${isRunning ? 'bg-blue-700/60 text-blue-100' : 'bg-slate-100 text-slate-600'}">
+        ${ctrlText}
+      </div>
+
+      <!-- 脚部：佩戴状态与小眼睛监控图标 -->
+      <div class="flex items-center justify-between text-[10px] pt-1 border-t ${isRunning ? 'border-blue-500/60 text-blue-200' : 'border-slate-100 text-slate-400'}">
+        <span>${dev.isWorn ? '👓已佩戴' : '未佩戴'}</span>
+        <button onclick="event.stopPropagation(); selectMonitorDevice('${dev.sn}')" class="action-btn px-1.5 py-0.5 rounded hover:bg-black/10 transition font-medium" title="调取此机详情与运维工具">
+          👁️ 监看
+        </button>
+      </div>
+
+      ${isSelected ? '<div class="absolute -top-1.5 -right-1.5 w-5 h-5 bg-amber-500 text-white rounded-full flex items-center justify-center text-xs font-black border-2 border-white shadow">✓</div>' : ''}
     `;
+
     matrix.appendChild(card);
   });
 
-  safeSetText('selected-badge', selectedSns.size);
+  document.getElementById('selected-badge').innerText = selectedSns.size;
 }
 
-function toggleDeviceSelect(sn) {
-  if (selectedSns.has(sn)) selectedSns.delete(sn);
-  else selectedSns.add(sn);
-  renderMatrix();
-}
-
+// 统计指标与低电量警告
 function updateTopStats() {
   const all = Array.from(devices.values());
-  let idle = 0, running = 0, offline = 0;
-  const lowDevs = [];
-  all.forEach(d => {
-    if (!d.online) {
-      offline++;
-    } else {
-      if (isDesktopApp(d.currentApp)) idle++;
-      else running++;
-      if (d.battery > 0 && d.battery < 30) lowDevs.push(d);
-    }
-  });
+  const idle = all.filter(d => d.online && isDesktopApp(d.currentApp)).length;
+  const running = all.filter(d => d.online && !isDesktopApp(d.currentApp)).length;
+  const offline = all.filter(d => !d.online).length;
+  const lowDevs = all.filter(d => d.online && d.battery > 0 && d.battery <= 30);
 
   safeSetText('stat-total', all.length);
   safeSetText('stat-idle', idle);
   safeSetText('stat-running', running);
   safeSetText('stat-offline', offline);
   safeSetText('stat-low', lowDevs.length);
+
+  // 兼容其他模板/别名 ID
+  safeSetText('top-stat-total', all.length);
+  safeSetText('top-stat-online', idle + running);
+  safeSetText('top-stat-idle', idle);
+  safeSetText('top-stat-running', running);
+  safeSetText('top-stat-offline', offline);
+
   safeSetText('btn-total-online', idle + running);
   safeSetText('btn-total-idle', idle);
   safeSetText('btn-total-running', running);
 
-  const alertBox = document.getElementById('low-battery-alert');
-  if (alertBox) {
+  const lowAlert = document.getElementById('low-battery-alert');
+  if (lowAlert) {
     if (lowDevs.length > 0) {
-      safeSetText('low-battery-names', lowDevs.map(d => `${d.displayName}(${d.battery}%)`).join('、'));
-      alertBox.classList.remove('hidden');
+      const names = lowDevs.map(d => '#' + d.displayName).join('、');
+      safeSetText('low-battery-names', names);
+      lowAlert.classList.remove('hidden');
     } else {
-      alertBox.classList.add('hidden');
+      lowAlert.classList.add('hidden');
     }
   }
 }
 
-// ======================== 快捷勾选 ========================
-function selectAllOnline() {
-  selectedSns.clear();
-  Array.from(devices.values()).filter(d => d.online).forEach(d => selectedSns.add(d.sn));
+// ======================== 3. 机位选择交互 ========================
+function toggleSelectDevice(sn) {
   playSound('click');
+  if (selectedSns.has(sn)) selectedSns.delete(sn);
+  else selectedSns.add(sn);
   renderMatrix();
 }
 
-function selectCurrentGroup() {
-  selectedSns.clear();
-  getFilteredDevices().filter(d => d.online).forEach(d => selectedSns.add(d.sn));
+function selectAllOnline() {
   playSound('click');
+  selectedSns.clear();
+  devices.forEach(d => {
+    if (d.online) selectedSns.add(d.sn);
+  });
   renderMatrix();
+  showToast(`已一键全选全部 ${selectedSns.size} 台在线头显`);
 }
 
 function selectAllIdle() {
-  selectedSns.clear();
-  getFilteredDevices().filter(d => d.online && isDesktopApp(d.currentApp)).forEach(d => selectedSns.add(d.sn));
   playSound('click');
+  selectedSns.clear();
+  devices.forEach(d => {
+    if (d.online && isDesktopApp(d.currentApp)) {
+      selectedSns.add(d.sn);
+    }
+  });
   renderMatrix();
+  showToast(`已勾选 ${selectedSns.size} 台空闲待命头显`);
 }
 
 function selectAllRunning() {
-  selectedSns.clear();
-  getFilteredDevices().filter(d => d.online && !isDesktopApp(d.currentApp)).forEach(d => selectedSns.add(d.sn));
   playSound('click');
+  selectedSns.clear();
+  devices.forEach(d => {
+    if (d.online && !isDesktopApp(d.currentApp)) {
+      selectedSns.add(d.sn);
+    }
+  });
   renderMatrix();
+  showToast(`已勾选 ${selectedSns.size} 台正在体验中的头显`);
 }
 
 function clearSelection() {
-  selectedSns.clear();
   playSound('click');
+  selectedSns.clear();
   renderMatrix();
+  showToast('已清空所选机位');
 }
 
-// ======================== 右侧监看与遥测 ========================
+// ======================== 4. 单机按需画面监看与运维 ========================
 function selectMonitorDevice(sn) {
-  if (isStreamingActive && currentMonitorSn && currentMonitorSn !== sn) {
+  const dev = devices.get(sn);
+  if (!dev) return;
+
+  // 若之前在给其他设备拉流，切换时主动停止旧流，避免产生多路带宽堆积
+  if (currentMonitorSn && currentMonitorSn !== sn && isStreamingActive) {
     stopLiveStreamInternal(currentMonitorSn);
   }
+
   currentMonitorSn = sn;
-  const dev = devices.get(sn);
-  if (dev) refreshMonitorTelemetry(dev);
+  refreshMonitorTelemetry(dev);
+
+  // 默认进入省流待命状态，不自动拉流
+  isStreamingActive = false;
+  const streamImg = document.getElementById('side-monitor-img');
+  const overlay = document.getElementById('stream-standby-overlay');
+  const liveBar = document.getElementById('stream-live-bar');
+  const canvas = document.getElementById('side-monitor-canvas');
+
+  streamImg.src = '';
+  streamImg.classList.add('hidden');
+  liveBar.classList.add('hidden');
+  overlay.classList.remove('hidden');
+  canvas.classList.remove('hidden');
+
   renderMatrix();
 }
 
 function refreshMonitorTelemetry(dev) {
-  safeSetText('monitor-panel-title', dev.displayName || dev.sn);
-  safeSetText('panel-sn', dev.sn);
+  document.getElementById('monitor-panel-title').innerText = `${dev.displayName}`;
+  document.getElementById('panel-sn').innerText = dev.sn;
   const badge = document.getElementById('monitor-panel-badge');
-  if (badge) {
-    if (!dev.online) {
-      badge.className = 'status-pill';
-      badge.textContent = '离线';
-    } else if (dev.trackingLost) {
-      badge.className = 'status-pill status-pill--error';
-      badge.textContent = '定位丢失';
-    } else if (!isDesktopApp(dev.currentApp)) {
-      badge.className = 'status-pill status-pill--info';
-      badge.textContent = '体验中';
-    } else {
-      badge.className = 'status-pill status-pill--online';
-      badge.textContent = '空闲就绪';
-    }
+
+  const isTrackingLost = dev.online && (dev.trackingLost || (dev.currentApp && dev.currentApp.toLowerCase().includes('seethrough.setting')));
+  const isRunning = dev.online && !isTrackingLost && !isDesktopApp(dev.currentApp);
+  if (!dev.online) {
+    badge.className = 'text-[10px] px-2 py-0.5 rounded-md bg-slate-100 text-slate-500 border border-slate-200 font-medium';
+    badge.innerText = '离线';
+  } else if (isTrackingLost) {
+    badge.className = 'text-[10px] px-2 py-0.5 rounded-md bg-amber-500 text-white border border-amber-600 font-bold animate-pulse';
+    badge.innerText = '⚠️ 大空间丢失';
+  } else if (isRunning) {
+    badge.className = 'text-[10px] px-2 py-0.5 rounded-md bg-blue-50 text-blue-600 border border-blue-200 font-medium';
+    badge.innerText = '正在体验';
+  } else {
+    badge.className = 'text-[10px] px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-600 border border-emerald-200 font-medium';
+    badge.innerText = '空闲待命';
   }
-  safeSetText('panel-battery', dev.online ? `${dev.battery}%` : '--');
-  safeSetText('panel-charging', dev.online ? (dev.isCharging ? '⚡ 充电中' : '') : '');
-  safeSetText('panel-controllers', dev.online ? `左 ${dev.controllerLeftBattery}% · 右 ${dev.controllerRightBattery}%` : '左 -- · 右 --');
-  safeSetText('panel-worn', dev.online ? (dev.isWorn ? '👓 佩戴中' : '未佩戴') : '--');
-  safeSetText('panel-app', dev.trackingLost ? '⚠️ 定位丢失' : (isDesktopApp(dev.currentApp) ? '系统桌面' : (dev.appTitle || dev.currentApp)));
+
+  document.getElementById('panel-battery').innerText = !dev.online ? '--' : `${dev.battery}%`;
+  document.getElementById('panel-charging').innerText = dev.isCharging ? '⚡ 充电中' : '🔋 未充电';
+  document.getElementById('panel-controllers').innerText = !dev.online
+    ? '左: -- | 右: --'
+    : `左: ${dev.controllerLeftBattery}% | 右: ${dev.controllerRightBattery}%`;
+  document.getElementById('panel-worn').innerText = !dev.online ? '--' : dev.isWorn ? '👓 游客佩戴中' : '⚠️ 已脱下';
+  if (isTrackingLost) {
+    document.getElementById('panel-app').innerText = '⚠️ 大空间定位丢失 (透视重定中)';
+  } else {
+    document.getElementById('panel-app').innerText = isDesktopApp(dev.currentApp) ? '系统桌面' : (dev.appTitle || dev.currentApp);
+  }
 }
 
-function copyCurrentSn() {
-  if (!currentMonitorSn) return;
-  navigator.clipboard.writeText(currentMonitorSn).then(() => showToast(`已复制 SN: ${currentMonitorSn}`, '📋'));
-}
+let snapshotTimer = null;
 
-function startCanvasSimulation() {
-  const canvas = document.getElementById('side-monitor-canvas');
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  let t = 0;
-  function draw() {
-    if (!isStreamingActive) {
-      ctx.fillStyle = '#070b14';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.strokeStyle = 'rgba(59, 130, 246, 0.08)';
-      ctx.lineWidth = 1;
-      for (let x = 0; x < canvas.width; x += 40) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
-      }
-      for (let y = 0; y < canvas.height; y += 40) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
-      }
-      const yScan = (Math.sin(t) * 0.5 + 0.5) * canvas.height;
-      const grad = ctx.createLinearGradient(0, yScan - 20, 0, yScan + 20);
-      grad.addColorStop(0, 'rgba(6, 182, 212, 0)');
-      grad.addColorStop(0.5, 'rgba(6, 182, 212, 0.16)');
-      grad.addColorStop(1, 'rgba(6, 182, 212, 0)');
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, yScan - 20, canvas.width, 40);
-      t += 0.018;
-    }
-    requestAnimationFrame(draw);
-  }
-  draw();
-}
+let streamStatusPollTimer = null;
+let lastKnownSuiteHealth = null;
 
 async function checkSuiteHealthBackground() {
   try {
@@ -1124,87 +581,34 @@ async function checkSuiteHealthBackground() {
       lastKnownSuiteHealth = await res.json();
       updateSuiteLinkIndicator(lastKnownSuiteHealth);
     }
-  } catch { }
+  } catch (e) { }
 }
 
 function updateSuiteLinkIndicator(health) {
   const el = document.getElementById('suite-link-indicator');
-  if (!el || !health) return;
-  if (!health.isProcessRunning) {
-    el.textContent = '🔴 PICO 套件未运行';
-    el.className = 'panel-sub mono text-rose';
-  } else if (!health.isPortOpen) {
-    el.textContent = '🟡 套件已运行 · 60061 端口未开放';
-    el.className = 'panel-sub mono text-amber';
-  } else if (!health.isSdkActive) {
-    el.textContent = '🟡 SDK 握手中...';
-    el.className = 'panel-sub mono text-amber';
-  } else {
-    el.textContent = '🟢 官方套件 60061 已就绪';
-    el.className = 'panel-sub mono text-emerald';
-  }
-}
-
-async function toggleLiveStream() {
-  if (!currentMonitorSn) return;
-  const dev = devices.get(currentMonitorSn);
-  if (!dev || !dev.online) {
-    showToast('当前头显离线，无法开启实时画面监控', '⚠️');
+  if (!el) return;
+  if (!health) {
+    el.innerText = '套件: 未知';
+    el.className = 'text-slate-400 font-mono text-[9px]';
     return;
   }
-  playSound('click');
-
-  const streamImg = document.getElementById('side-monitor-img');
-  const overlay = document.getElementById('stream-standby-overlay');
-  const liveBar = document.getElementById('stream-live-bar');
-  const canvas = document.getElementById('side-monitor-canvas');
-
-  if (!isStreamingActive) {
-    isStreamingActive = true;
-    overlay.classList.add('hidden');
-    liveBar.classList.remove('hidden');
-    canvas.classList.add('hidden');
-    streamImg.classList.remove('hidden');
-
-    await fetch(`/api/stream/${encodeURIComponent(dev.sn)}/start`, { method: 'POST' }).catch(() => {});
-    startStreamStatusPolling(dev.sn);
-
-    streamImg.src = apiUrl(`/api/stream/${encodeURIComponent(dev.sn)}/mjpeg?t=${Date.now()}`);
-    streamImg.onerror = () => startSnapshotStream(dev.sn);
-    showToast(`已开启 ${dev.displayName} 实时监看`);
+  if (!health.isProcessRunning) {
+    el.innerText = '🔴 官方套件未运行';
+    el.className = 'text-rose-400 font-mono text-[9px] cursor-pointer hover:underline';
+    el.title = '未检测到 PICOBusinessSuite.exe，点击查看诊断';
+  } else if (!health.isPortOpen) {
+    el.innerText = '🟡 套件未登录 (60061未开放)';
+    el.className = 'text-amber-400 font-mono text-[9px] cursor-pointer hover:underline';
+    el.title = '套件已运行但未登录，点击查看诊断';
+  } else if (!health.isSdkActive) {
+    el.innerText = '🟡 SDK 握手中...';
+    el.className = 'text-amber-300 font-mono text-[9px] cursor-pointer hover:underline';
+    el.title = '正在与官方套件建立 gRPC 连接';
   } else {
-    stopLiveStreamInternal(dev.sn);
-    showToast('已停止画面拉流');
+    el.innerText = '🟢 套件服务(60061)就绪';
+    el.className = 'text-emerald-400 font-mono text-[9px] cursor-pointer hover:underline';
+    el.title = '链路正常，支持实时屏幕监控';
   }
-}
-
-function startSnapshotStream(sn) {
-  if (snapshotTimer) clearInterval(snapshotTimer);
-  const streamImg = document.getElementById('side-monitor-img');
-  let inFlight = false;
-  snapshotTimer = setInterval(async () => {
-    if (!isStreamingActive || currentMonitorSn !== sn) {
-      clearInterval(snapshotTimer);
-      snapshotTimer = null;
-      return;
-    }
-    if (inFlight) return;
-    inFlight = true;
-    try {
-      const res = await fetch(`/api/stream/${encodeURIComponent(sn)}/frame?t=${Date.now()}`);
-      if (res.ok) {
-        const blob = await res.blob();
-        if (blob.size > 0) {
-          const url = URL.createObjectURL(blob);
-          const old = streamImg.src;
-          streamImg.onload = () => { if (old && old.startsWith('blob:')) URL.revokeObjectURL(old); };
-          streamImg.src = url;
-        }
-      }
-    } catch { } finally {
-      inFlight = false;
-    }
-  }, 80);
 }
 
 function startStreamStatusPolling(sn) {
@@ -1215,21 +619,15 @@ function startStreamStatusPolling(sn) {
       return;
     }
     try {
-      const res = await fetch(`/api/stream/${encodeURIComponent(sn)}/status`);
+      const res = await fetch(`/api/stream/${sn}/status`);
       if (res.ok) {
         const data = await res.json();
-        const st = data.streamStatus;
-        if (data.hasRealFrame || st?.phase === 'Streaming') {
-          safeSetText('stream-status-text', `LIVE ${st?.lastWidth || 854}x${st?.lastHeight || 480}`);
-          safeSetText('monitor-fps-indicator', `${(st?.fps || 0).toFixed(1)} FPS`);
-        } else if (data.suiteHealth && !data.suiteHealth.isPortOpen) {
-          safeSetText('stream-status-text', '套件 60061 未就绪');
-        } else {
-          safeSetText('stream-status-text', '等待头显推流...');
+        updateStreamStatusPill(data.streamStatus, data.suiteHealth, data.hasRealFrame);
+        if (data.suiteHealth) {
+          updateSuiteLinkIndicator(data.suiteHealth);
         }
-        if (data.suiteHealth) updateSuiteLinkIndicator(data.suiteHealth);
       }
-    } catch { }
+    } catch (e) { }
   }, 1200);
 }
 
@@ -1240,159 +638,167 @@ function stopStreamStatusPolling() {
   }
 }
 
-function stopLiveStreamInternal(sn) {
-  isStreamingActive = false;
-  stopStreamStatusPolling();
-  if (snapshotTimer) { clearInterval(snapshotTimer); snapshotTimer = null; }
-  const streamImg = document.getElementById('side-monitor-img');
-  if (streamImg.src && streamImg.src.startsWith('blob:')) URL.revokeObjectURL(streamImg.src);
-  streamImg.src = '';
-  streamImg.classList.add('hidden');
-  document.getElementById('stream-live-bar')?.classList.add('hidden');
-  document.getElementById('stream-standby-overlay')?.classList.remove('hidden');
-  document.getElementById('side-monitor-canvas')?.classList.remove('hidden');
-  safeSetText('monitor-fps-indicator', '--');
-  fetch(`/api/stream/${encodeURIComponent(sn)}/stop`, { method: 'POST' }).catch(() => {});
-}
+function updateStreamStatusPill(status, health, hasRealFrame) {
+  const textEl = document.getElementById('stream-status-text');
+  const dotEl = document.getElementById('stream-status-dot');
+  const pillEl = document.getElementById('stream-status-pill');
+  if (!textEl || !dotEl || !pillEl) return;
 
-// ======================== 单机与批量控制 ========================
-async function singleDeviceAction(action) {
-  if (!currentMonitorSn) return showToast('请先选择一台头显', '⚠️');
-  const dev = devices.get(currentMonitorSn);
-  if (!dev) return;
-  playSound('click');
+  if (health && !health.isPortOpen) {
+    textEl.innerText = '⚠️ 官方套件未就绪 (60061离线)';
+    dotEl.className = 'w-1.5 h-1.5 rounded-full bg-rose-500';
+    pillEl.className = 'bg-black/85 backdrop-blur px-2.5 py-1 rounded-md text-[10px] font-mono text-rose-400 flex items-center gap-1.5 shadow pointer-events-auto cursor-pointer border border-rose-500/40 hover:border-rose-400 transition';
+    return;
+  }
 
-  const sn = encodeURIComponent(dev.sn);
-  if (action === 'recenter') {
-    await fetch(`/api/devices/${sn}/recenter`, { method: 'POST' });
-    showToast(`已向 ${dev.displayName} 下发视角复位`);
-  } else if (action === 'home') {
-    await fetch(`/api/devices/${sn}/stop-app`, { method: 'POST' });
-    showToast(`已退出 ${dev.displayName} 当前应用`);
-  } else if (action === 'lock') {
-    const endpoint = dev.locked ? 'unlock' : 'lock';
-    await fetch(`/api/devices/${sn}/${endpoint}`, { method: 'POST' });
-    showToast(`已${dev.locked ? '解锁' : '锁定'} ${dev.displayName}`);
-  } else if (action === 'screen_on' || action === 'screen_off') {
-    const screenOn = action === 'screen_on';
-    await fetch(`/api/devices/${sn}/screen`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ screenOn })
-    });
-    showToast(`已向 ${dev.displayName} 下发${screenOn ? '亮屏' : '息屏'}`);
-  } else if (action === 'reboot') {
-    if (!confirm(`确认重启头显【${dev.displayName}】吗？`)) return;
-    await fetch(`/api/devices/${sn}/reboot`, { method: 'POST' });
-    showToast(`已向 ${dev.displayName} 下发重启指令`);
+  if (hasRealFrame || status?.phase === 'Streaming' || status?.phase === 4) {
+    textEl.innerText = `LIVE 实时传输中 (${status?.lastWidth || 854}x${status?.lastHeight || 480})`;
+    dotEl.className = 'w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping';
+    pillEl.className = 'bg-black/75 backdrop-blur px-2.5 py-1 rounded-md text-[10px] font-mono text-emerald-400 flex items-center gap-1.5 shadow pointer-events-auto cursor-pointer border border-emerald-500/30 hover:border-emerald-400 transition';
+  } else if (status?.phase === 'WaitingFirstFrame' || status?.phase === 3) {
+    textEl.innerText = '⏳ 等待头显推流响应...';
+    dotEl.className = 'w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping';
+    pillEl.className = 'bg-black/85 backdrop-blur px-2.5 py-1 rounded-md text-[10px] font-mono text-amber-300 flex items-center gap-1.5 shadow pointer-events-auto cursor-pointer border border-amber-500/40 hover:border-amber-400 transition';
+  } else if (status?.phase === 'Error' || status?.phase === 5) {
+    textEl.innerText = '❌ 监看请求异常';
+    dotEl.className = 'w-1.5 h-1.5 rounded-full bg-rose-500';
+    pillEl.className = 'bg-black/85 backdrop-blur px-2.5 py-1 rounded-md text-[10px] font-mono text-rose-400 flex items-center gap-1.5 shadow pointer-events-auto cursor-pointer border border-rose-500/40 hover:border-rose-400 transition';
   }
 }
 
-async function batchAction(action) {
-  const snList = selectedSns.size > 0
-    ? Array.from(selectedSns)
-    : getFilteredDevices().filter(d => d.online).map(d => d.sn);
-
-  if (snList.length === 0) {
-    playSound('warning');
-    showToast('请先勾选至少一台在线设备', '⚠️');
+// 用户手动切换实时画面拉流 (按需开启，省流模式)
+async function toggleLiveStream() {
+  if (!currentMonitorSn) return;
+  const dev = devices.get(currentMonitorSn);
+  if (!dev || !dev.online) {
+    showToast('该头显已离线，无法开启画面监控', '⚠️');
     return;
   }
 
   playSound('click');
-  if (action === 'start') {
-    if (!currentProject) return showToast('请先在第一步选择一个体验项目', '⚠️');
-    const res = await fetch('/api/batch/start-app', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ snList, packageName: currentProject.packageName, extraJson: currentProject.extraJson || '' })
-    });
-    if (res.ok) {
-      playSound('success');
-      showToast(`已向 ${snList.length} 台设备启动【${currentProject.name}】`);
+
+  const streamImg = document.getElementById('side-monitor-img');
+  const overlay = document.getElementById('stream-standby-overlay');
+  const liveBar = document.getElementById('stream-live-bar');
+  const canvas = document.getElementById('side-monitor-canvas');
+
+  if (!isStreamingActive) {
+    // 检查套件连通性
+    try {
+      const hRes = await fetch('/api/stream/suite-status');
+      if (hRes.ok) {
+        lastKnownSuiteHealth = await hRes.json();
+        updateSuiteLinkIndicator(lastKnownSuiteHealth);
+        if (!lastKnownSuiteHealth.isPortOpen) {
+          showToast('⚠️ 官方套件未就绪(60061端口未开放)，请启动并登录套件', '⚠️');
+        }
+      }
+    } catch (e) { }
+
+    // 开启拉流
+    isStreamingActive = true;
+    overlay.classList.add('hidden');
+    liveBar.classList.remove('hidden');
+    canvas.classList.add('hidden');
+    streamImg.classList.remove('hidden');
+
+    const startRes = await fetch(`/api/stream/${dev.sn}/start`, { method: 'POST' });
+    if (startRes.ok) {
+      const data = await startRes.json();
+      if (data.status) {
+        updateStreamStatusPill(data.status, lastKnownSuiteHealth);
+      }
     }
-  } else if (action === 'pause') {
-    await fetch('/api/batch/pause-video', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snList }) });
-    showToast(`已向 ${snList.length} 台设备下发暂停`);
-  } else if (action === 'stop') {
-    await fetch('/api/batch/stop-app', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snList }) });
-    showToast(`已批量关闭 ${snList.length} 台设备应用`);
-  } else if (action === 'screen_on' || action === 'screen_off') {
-    const screenOn = action === 'screen_on';
-    await fetch('/api/batch/screen', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snList, screenOn }) });
-    showToast(`已对 ${snList.length} 台设备执行批量${screenOn ? '亮屏' : '息屏'}`);
+
+    startStreamStatusPolling(dev.sn);
+
+    streamImg.src = `/api/stream/${dev.sn}/mjpeg?t=${Date.now()}`;
+    streamImg.onerror = () => {
+      console.log('[LiveStream] MJPEG 流断开或不支持，平滑切换为高频快照轮询模式...');
+      startSnapshotStream(dev.sn);
+    };
+    showToast(`已开启 ${dev.displayName} 实时画面监控`);
+  } else {
+    // 关闭拉流
+    stopLiveStreamInternal(dev.sn);
+    showToast('已关闭画面拉流，恢复省流模式');
   }
 }
 
-let globalVolumeDebounce = null;
-function onGlobalVolumeInput(val) {
-  globalVolume = parseInt(val, 10);
-  safeSetText('global-vol-text', `${val}%`);
-  if (globalVolumeDebounce) clearTimeout(globalVolumeDebounce);
-  globalVolumeDebounce = setTimeout(() => applyGlobalVolume(val, false), 200);
+function startSnapshotStream(sn) {
+  if (snapshotTimer) clearInterval(snapshotTimer);
+  const streamImg = document.getElementById('side-monitor-img');
+  streamImg.classList.remove('hidden');
+  let inFlight = false;
+
+  snapshotTimer = setInterval(async () => {
+    if (!isStreamingActive || currentMonitorSn !== sn) {
+      clearInterval(snapshotTimer);
+      snapshotTimer = null;
+      return;
+    }
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      const res = await fetch(`/api/stream/${sn}/frame?t=${Date.now()}`);
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob.size > 0) {
+          const url = URL.createObjectURL(blob);
+          const oldUrl = streamImg.src;
+          streamImg.onload = () => {
+            if (oldUrl && oldUrl.startsWith('blob:')) URL.revokeObjectURL(oldUrl);
+          };
+          streamImg.src = url;
+        }
+      }
+    } catch (e) {
+    } finally {
+      inFlight = false;
+    }
+  }, 65); // 约 15~16 fps 顺滑拉流
 }
 
-async function applyGlobalVolume(val, showFeedback = true) {
-  if (globalVolumeDebounce) { clearTimeout(globalVolumeDebounce); globalVolumeDebounce = null; }
-  const snList = selectedSns.size > 0
-    ? Array.from(selectedSns)
-    : Array.from(devices.values()).filter(d => d.online).map(d => d.sn);
-  if (snList.length === 0) return;
+function stopLiveStreamInternal(sn) {
+  isStreamingActive = false;
+  stopStreamStatusPolling();
 
-  await fetch('/api/batch/volume', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ snList, volume: parseInt(val, 10) })
-  }).catch(() => {});
-  if (showFeedback) showToast(`已同步 ${snList.length} 台设备音量为 ${val}%`, '🔊');
+  if (snapshotTimer) {
+    clearInterval(snapshotTimer);
+    snapshotTimer = null;
+  }
+  const streamImg = document.getElementById('side-monitor-img');
+  const overlay = document.getElementById('stream-standby-overlay');
+  const liveBar = document.getElementById('stream-live-bar');
+  const canvas = document.getElementById('side-monitor-canvas');
+
+  if (streamImg.src && streamImg.src.startsWith('blob:')) {
+    URL.revokeObjectURL(streamImg.src);
+  }
+  streamImg.src = '';
+  streamImg.classList.add('hidden');
+  liveBar.classList.add('hidden');
+  overlay.classList.remove('hidden');
+  canvas.classList.remove('hidden');
+
+  fetch(`/api/stream/${sn}/stop`, { method: 'POST' }).catch(() => {});
 }
 
-function promptBatchSystem(action) {
-  const snList = selectedSns.size > 0
-    ? Array.from(selectedSns)
-    : Array.from(devices.values()).filter(d => d.online).map(d => d.sn);
-  if (snList.length === 0) return showToast('当前没有可操作的在线设备', '⚠️');
-
-  playSound('warning');
-  pendingSystemAction = action;
-  safeSetText('confirm-icon', action === 'reboot' ? '🔄' : '⏻');
-  safeSetText('confirm-title', action === 'reboot' ? `确认重启 ${snList.length} 台头显？` : `确认关闭 ${snList.length} 台头显电源？`);
-  safeSetText('confirm-desc', action === 'reboot'
-    ? '头显将立即重启并在启动后自动重新连接。'
-    : '关机后需人工重新按头显电源键开机，请确认现场已结束体验。');
-  document.getElementById('confirm-modal')?.classList.remove('hidden');
-}
-
-function closeConfirmModal() {
-  pendingSystemAction = null;
-  document.getElementById('confirm-modal')?.classList.add('hidden');
-}
-
-async function executeBatchSystemConfirmed() {
-  const action = pendingSystemAction;
-  closeConfirmModal();
-  if (!action) return;
-  const snList = selectedSns.size > 0
-    ? Array.from(selectedSns)
-    : Array.from(devices.values()).filter(d => d.online).map(d => d.sn);
-  await fetch(`/api/batch/${action}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ snList })
-  });
-  showToast(`已向 ${snList.length} 台设备下发${action === 'reboot' ? '重启' : '关机'}指令`);
-}
-
-// ======================== 弹窗：套件诊断 ========================
 async function openSuiteDiagModal() {
-  document.getElementById('suite-diag-modal')?.classList.remove('hidden');
-  safeSetText('diag-target-sn', currentMonitorSn || '未选择');
-  safeSetText('diag-time', new Date().toLocaleTimeString());
+  const modal = document.getElementById('suite-diag-modal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  playSound('click');
+
+  document.getElementById('diag-target-sn').innerText = currentMonitorSn || '未选择';
+  document.getElementById('diag-time').innerText = new Date().toLocaleTimeString();
+
   await refreshSuiteDiagModal();
 }
 
 function closeSuiteDiagModal() {
-  document.getElementById('suite-diag-modal')?.classList.add('hidden');
+  const modal = document.getElementById('suite-diag-modal');
+  if (modal) modal.classList.add('hidden');
 }
 
 async function refreshSuiteDiagModal() {
@@ -1403,156 +809,633 @@ async function refreshSuiteDiagModal() {
     lastKnownSuiteHealth = data;
     updateSuiteLinkIndicator(data);
 
-    const setBadge = (id, ok, okText, failText) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.textContent = ok ? okText : failText;
-      el.className = `status-pill ${ok ? 'status-pill--online' : 'status-pill--error'}`;
-    };
-
-    setBadge('diag-proc-badge', data.isProcessRunning, '✅ 已运行', '❌ 未运行');
-    setBadge('diag-port-badge', data.isPortOpen, '✅ 端口开放 (60061)', '❌ 未开放 (需登录套件)');
-    setBadge('diag-sdk-badge', data.isSdkActive && data.isServerConnected, '✅ 握手正常', data.isPortOpen ? '🟡 握手中' : '⏳ 等待 60061 开放');
-
-    const streamEl = document.getElementById('diag-stream-badge');
-    const st = currentMonitorSn && data.streams ? data.streams[currentMonitorSn] : null;
-    if (streamEl) {
-      if (st?.phase === 'Streaming') {
-        streamEl.textContent = `🟢 推流中 (${st.totalFrames} 帧)`;
-        streamEl.className = 'status-pill status-pill--online';
-      } else if (st?.phase === 'WaitingFirstFrame') {
-        streamEl.textContent = '⏳ 等待首帧';
-        streamEl.className = 'status-pill status-pill--warn';
-      } else {
-        streamEl.textContent = '待命中';
-        streamEl.className = 'status-pill';
-      }
+    // 更新各个徽章
+    const procBadge = document.getElementById('diag-proc-badge');
+    if (data.isProcessRunning) {
+      procBadge.innerText = '✅ 已运行';
+      procBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700';
+    } else {
+      procBadge.innerText = '❌ 未检测到进程';
+      procBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700';
     }
 
-    safeSetText('diag-summary-icon', data.isPortOpen && data.isSdkActive ? '🎉' : '⚠️');
-    safeSetText('diag-summary-title', data.isPortOpen && data.isSdkActive ? '官方套件链路通信正常' : '官方套件链路尚未就绪');
-    safeSetText('diag-summary-desc', data.statusSummary || '');
-    const advice = document.getElementById('diag-advice-text');
-    if (advice) {
-      advice.innerHTML = `
-        <div><strong>诊断建议：</strong>${escapeHtml(data.advice || '请确认 PICO Business Suite 已登录并开启服务模式')}</div>
-        <div>1. 官方套件需保持登录状态才会开放本地 60061 gRPC 端口。</div>
-        <div>2. 头显需开机亮屏并与管理电脑处于同一局域网。</div>
+    const portBadge = document.getElementById('diag-port-badge');
+    if (data.isPortOpen) {
+      portBadge.innerText = '✅ 端口开放 (60061)';
+      portBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700';
+    } else {
+      portBadge.innerText = '❌ 端口未开启 (需登录套件)';
+      portBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700';
+    }
+
+    const sdkBadge = document.getElementById('diag-sdk-badge');
+    if (data.isSdkActive) {
+      sdkBadge.innerText = '✅ 已激活连接';
+      sdkBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700';
+    } else {
+      sdkBadge.innerText = '🟡 未连接';
+      sdkBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700';
+    }
+
+    const streamBadge = document.getElementById('diag-stream-badge');
+    const streamInfo = currentMonitorSn && data.streams ? data.streams[currentMonitorSn] : null;
+    if (streamInfo) {
+      if (streamInfo.phase === 'Streaming' || streamInfo.phase === 4) {
+        streamBadge.innerText = `🟢 推流正常 (${streamInfo.totalFrames} 帧)`;
+        streamBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-700';
+      } else if (streamInfo.phase === 'WaitingFirstFrame' || streamInfo.phase === 3) {
+        streamBadge.innerText = '⏳ 等待头显推流首帧';
+        streamBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700';
+      } else if (streamInfo.phase === 'SuiteOffline' || streamInfo.phase === 1) {
+        streamBadge.innerText = '🔴 官方套件离线';
+        streamBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700';
+      } else {
+        streamBadge.innerText = '待命省流中';
+        streamBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600';
+      }
+    } else {
+      streamBadge.innerText = '未拉流';
+      streamBadge.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-600';
+    }
+
+    // 更新总结卡片
+    const titleEl = document.getElementById('diag-summary-title');
+    const descEl = document.getElementById('diag-summary-desc');
+    const iconEl = document.getElementById('diag-summary-icon');
+    const boxEl = document.getElementById('diag-summary-box');
+
+    if (data.isPortOpen && data.isSdkActive) {
+      iconEl.innerText = '🎉';
+      titleEl.innerText = '官方套件链路通信正常';
+      titleEl.className = 'font-bold text-emerald-800 text-sm';
+      descEl.innerText = data.statusSummary || '链路就绪，可随时开启头显屏幕画面实时监控';
+      boxEl.className = 'p-3.5 rounded-xl bg-emerald-50 border border-emerald-200 flex items-start gap-3';
+    } else {
+      iconEl.innerText = '⚠️';
+      titleEl.innerText = '官方套件链路尚未就绪';
+      titleEl.className = 'font-bold text-amber-800 text-sm';
+      descEl.innerText = data.statusSummary || '未开放 60061 端口，请确保 PICO Business Suite 处于登录状态';
+      boxEl.className = 'p-3.5 rounded-xl bg-amber-50 border border-amber-200 flex items-start gap-3';
+    }
+
+    if (data.advice) {
+      document.getElementById('diag-advice-text').innerHTML = `
+        <p class="font-bold">诊断指引: ${data.advice}</p>
+        <p>1. 官方套件必须处于登录状态，未登录或未连接网络时套件不会启动 gRPC 60061 端口。</p>
+        <p>2. 头盔必须处于开机、亮屏、佩戴状态，并在同一个局域网 Wi-Fi 下。</p>
       `;
     }
-  } catch { }
+  } catch (e) { }
 }
 
 async function reconnectSuiteSdk() {
-  showToast('正在重新握手 PICO 官方套件...', '🔄');
-  const res = await fetch('/api/stream/reconnect', { method: 'POST' });
-  if (res.ok) {
-    const data = await res.json();
-    showToast(data.success ? 'SDK 重新连接成功' : '重连未就绪，请检查官方套件是否已登录', data.success ? '✓' : '⚠️');
-    await refreshSuiteDiagModal();
+  showToast('正在请求重新握手官方套件 SDK...', '🔄');
+  try {
+    const res = await fetch('/api/stream/reconnect', { method: 'POST' });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success) {
+        showToast('★ 官方企业套件 SDK 握手成功！', '🎉');
+      } else {
+        showToast('套件 60061 端口未就绪，请先登录 PICO Business Suite', '⚠️');
+      }
+      await refreshSuiteDiagModal();
+    }
+  } catch (e) {
+    showToast('重连请求异常: ' + e.message, '❌');
   }
 }
 
-// ======================== 弹窗：配置中心 ========================
+function copyCurrentSn() {
+  if (!currentMonitorSn) return;
+  navigator.clipboard.writeText(currentMonitorSn).then(() => {
+    playSound('click');
+    showToast(`已复制头显 SN 码: ${currentMonitorSn}`);
+  });
+}
+
+// 单机运维操作指令
+async function singleDeviceAction(action) {
+  if (!currentMonitorSn) {
+    showToast('请先选择一台设备', '⚠️');
+    return;
+  }
+  const dev = devices.get(currentMonitorSn);
+  if (!dev) return;
+
+  playSound('click');
+
+  if (action === 'recenter') {
+    await fetch(`/api/devices/${dev.sn}/recenter`, { method: 'POST' });
+    showToast(`已向 ${dev.displayName} 下发【🎯 视角正中复位】指令`);
+  } else if (action === 'home') {
+    await fetch(`/api/devices/${dev.sn}/stop-app`, { method: 'POST' });
+    showToast(`已直接关闭 ${dev.displayName} 的游戏进程`);
+  } else if (action === 'lock') {
+    const url = dev.locked ? `/api/devices/${dev.sn}/unlock` : `/api/devices/${dev.sn}/lock`;
+    await fetch(url, { method: 'POST' });
+    showToast(`已切换 ${dev.displayName} 锁定状态`);
+  } else if (action === 'screen_on') {
+    await fetch(`/api/devices/${dev.sn}/screen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ screenOn: true })
+    });
+    dev.screenOn = true;
+    renderMatrix();
+    showToast(`已向 ${dev.displayName} 发送【💡 点亮屏幕】指令`);
+  } else if (action === 'screen_off') {
+    await fetch(`/api/devices/${dev.sn}/screen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ screenOn: false })
+    });
+    dev.screenOn = false;
+    renderMatrix();
+    showToast(`已向 ${dev.displayName} 发送【🌑 熄灭屏幕】指令`);
+  } else if (action === 'reboot') {
+    if (confirm(`确认要远程重启 ${dev.displayName} (SN: ${dev.sn}) 吗？`)) {
+      await fetch(`/api/devices/${dev.sn}/reboot`, { method: 'POST' });
+      showToast(`已向 ${dev.displayName} 发送重启指令`);
+    }
+  }
+}
+
+// ======================== 5. 批量播控操作 ========================
+async function batchAction(type) {
+  const snList = Array.from(selectedSns);
+  if (snList.length === 0) {
+    playSound('warning');
+    showToast('请先选择机位 (可点击机号或上方一键全选)', '⚠️');
+    return;
+  }
+
+  // 离线设备校验：防止误向离线设备下发指令
+  const onlineSns = snList.filter(sn => devices.get(sn)?.online);
+  if (onlineSns.length === 0) {
+    playSound('warning');
+    showToast('所选设备当前均处于离线状态，无法下发播控指令', '⚠️');
+    return;
+  }
+
+  if (type === 'start') {
+    if (!currentProject) {
+      playSound('warning');
+      showToast('请先在第一步选择要播放的项目', '⚠️');
+      return;
+    }
+
+    playSound('success');
+    showToast(`🚀 正在向 ${snList.length} 台设备下发启动【${currentProject.name}】...`);
+
+    const res = await fetch('/api/batch/start-app', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        snList: snList,
+        packageName: currentProject.packageName,
+        extraJson: currentProject.extraJson || ''
+      })
+    });
+
+    if (res.ok) {
+      showToast(`🚀 体验启动成功，共分发 ${snList.length} 台设备！`);
+      selectedSns.clear();
+      renderMatrix();
+    }
+  } else if (type === 'pause') {
+    playSound('click');
+    await fetch('/api/batch/pause-video', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snList })
+    });
+    showToast(`⏸ 已对选中的 ${snList.length} 台设备下发【暂停】指令`);
+  } else if (type === 'stop') {
+    playSound('click');
+    await fetch('/api/batch/stop-app', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snList })
+    });
+    showToast(`⏹ 已直接关闭 ${snList.length} 台设备的游戏进程`);
+    selectedSns.clear();
+    renderMatrix();
+  } else if (type === 'screen_on') {
+    playSound('click');
+    await fetch('/api/batch/screen', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snList, screenOn: true })
+    });
+    snList.forEach(sn => {
+      const dev = devices.get(sn);
+      if (dev) dev.screenOn = true;
+    });
+    renderMatrix();
+    showToast(`💡 已对 ${snList.length} 台设备执行【一键亮屏】`);
+  } else if (type === 'screen_off') {
+    playSound('click');
+    await fetch('/api/batch/screen', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snList, screenOn: false })
+    });
+    snList.forEach(sn => {
+      const dev = devices.get(sn);
+      if (dev) dev.screenOn = false;
+    });
+    renderMatrix();
+    showToast(`🌑 已对 ${snList.length} 台设备执行【一键息屏】`);
+  }
+}
+
+// 全局音量调节（带 200ms 滑动防抖，防止高频网络请求）
+let globalVolumeDebounce = null;
+function onGlobalVolumeInput(val) {
+  globalVolume = parseInt(val);
+  safeSetText('global-vol-text', val + '%');
+
+  if (globalVolumeDebounce) clearTimeout(globalVolumeDebounce);
+  globalVolumeDebounce = setTimeout(() => {
+    applyGlobalVolume(val, false);
+  }, 200);
+}
+
+async function applyGlobalVolume(val, showFeedback = true) {
+  if (globalVolumeDebounce) {
+    clearTimeout(globalVolumeDebounce);
+    globalVolumeDebounce = null;
+  }
+  const snList = selectedSns.size > 0
+    ? Array.from(selectedSns)
+    : Array.from(devices.values()).filter(d => d.online).map(d => d.sn);
+
+  if (snList.length === 0) return;
+
+  try {
+    await fetch('/api/batch/volume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        snList: snList,
+        volume: parseInt(val)
+      })
+    });
+    if (showFeedback) {
+      showToast(`已调节 ${snList.length} 台设备音量为 ${val}%`);
+    }
+  } catch (e) {
+    console.error('音量同步失败:', e);
+  }
+}
+
+// ======================== 6. 重启与关机二次确认 ========================
+function promptBatchSystem(action) {
+  const snList = selectedSns.size > 0
+    ? Array.from(selectedSns)
+    : Array.from(devices.values()).filter(d => d.online).map(d => d.sn);
+
+  if (snList.length === 0) {
+    showToast('当前没有设备可操作', '⚠️');
+    return;
+  }
+
+  playSound('warning');
+  pendingSystemAction = action;
+  const count = snList.length;
+
+  const modal = document.getElementById('confirm-modal');
+  const icon = document.getElementById('confirm-icon');
+  const iconBg = document.getElementById('confirm-icon-bg');
+  const title = document.getElementById('confirm-title');
+  const desc = document.getElementById('confirm-desc');
+  const okBtn = document.getElementById('confirm-ok-btn');
+
+  if (action === 'reboot') {
+    icon.innerText = '🔄';
+    iconBg.className = 'w-12 h-12 rounded-full mx-auto flex items-center justify-center text-2xl bg-amber-100';
+    title.innerText = `确认重启 ${count} 台设备？`;
+    desc.innerText = `即将向勾选的 ${count} 台 PICO 头显发送远程重启指令，设备将在重启后自动重连。`;
+    okBtn.className = 'py-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold shadow-md shadow-amber-600/30';
+    okBtn.innerText = '确认立即重启';
+  } else {
+    icon.innerText = '⏻';
+    iconBg.className = 'w-12 h-12 rounded-full mx-auto flex items-center justify-center text-2xl bg-rose-100';
+    title.innerText = `确认批量关闭 ${count} 台设备？`;
+    desc.innerText = `即将向勾选的 ${count} 台 PICO 头显发送关机指令，关机后需现场物理开机。`;
+    okBtn.className = 'py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-md shadow-rose-600/30';
+    okBtn.innerText = '确认立即关机';
+  }
+
+  modal.classList.remove('hidden');
+}
+
+function closeConfirmModal() {
+  document.getElementById('confirm-modal').classList.add('hidden');
+  pendingSystemAction = null;
+}
+
+async function executeBatchSystemConfirmed() {
+  const snList = selectedSns.size > 0
+    ? Array.from(selectedSns)
+    : Array.from(devices.values()).filter(d => d.online).map(d => d.sn);
+
+  const action = pendingSystemAction;
+  closeConfirmModal();
+
+  if (action === 'reboot') {
+    await fetch('/api/batch/reboot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snList })
+    });
+    showToast(`已成功向 ${snList.length} 台头显下发【批量重启】指令`);
+  } else if (action === 'shutdown') {
+    await fetch('/api/batch/shutdown', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ snList })
+    });
+    showToast(`已成功向 ${snList.length} 台头显下发【批量关机】指令`);
+  }
+
+  selectedSns.clear();
+  renderMatrix();
+}
+
+// ======================== 7. 配置中心交互 (含 SN 绑定核心逻辑) ========================
 function openConfigModal(tab = 'app') {
-  document.getElementById('config-modal')?.classList.remove('hidden');
+  playSound('click');
+  document.getElementById('config-modal').classList.remove('hidden');
   switchConfigTab(tab);
   renderConfigTables();
 }
 
 function closeConfigModal() {
-  document.getElementById('config-modal')?.classList.add('hidden');
+  document.getElementById('config-modal').classList.add('hidden');
 }
 
 function switchConfigTab(tab) {
-  ['app', 'headset', 'udp', 'env'].forEach(t => {
-    const btn = document.getElementById(`tab-btn-${t}`);
-    const content = document.getElementById(`tab-content-${t}`);
-    if (btn) btn.className = `tab-btn${t === tab ? ' tab-btn--active' : ''}`;
-    if (content) content.classList.toggle('hidden', t !== tab);
+  const appBtn = document.getElementById('tab-btn-app');
+  const headsetBtn = document.getElementById('tab-btn-headset');
+  const udpBtn = document.getElementById('tab-btn-udp');
+  const envBtn = document.getElementById('tab-btn-env');
+  const appContent = document.getElementById('tab-content-app');
+  const headsetContent = document.getElementById('tab-content-headset');
+  const udpContent = document.getElementById('tab-content-udp');
+  const envContent = document.getElementById('tab-content-env');
+
+  [appBtn, headsetBtn, udpBtn, envBtn].forEach(b => {
+    if (b) b.className = 'py-3 px-4 border-b-2 border-transparent text-slate-400 hover:text-slate-700 transition whitespace-nowrap';
   });
-  if (tab === 'env') loadPicoServiceStatus();
+  [appContent, headsetContent, udpContent, envContent].forEach(c => {
+    if (c) c.classList.add('hidden');
+  });
+
+  if (tab === 'app') {
+    if (appBtn) appBtn.className = 'py-3 px-4 border-b-2 border-blue-600 text-blue-600 transition whitespace-nowrap';
+    if (appContent) appContent.classList.remove('hidden');
+  } else if (tab === 'headset') {
+    if (headsetBtn) headsetBtn.className = 'py-3 px-4 border-b-2 border-blue-600 text-blue-600 transition whitespace-nowrap';
+    if (headsetContent) headsetContent.classList.remove('hidden');
+  } else if (tab === 'udp') {
+    if (udpBtn) udpBtn.className = 'py-3 px-4 border-b-2 border-indigo-600 text-indigo-600 transition whitespace-nowrap';
+    if (udpContent) udpContent.classList.remove('hidden');
+    renderUdpDeviceProjects();
+    updateTestUdpPreview();
+  } else if (tab === 'env') {
+    if (envBtn) envBtn.className = 'py-3 px-4 border-b-2 border-blue-600 text-blue-600 transition whitespace-nowrap';
+    if (envContent) envContent.classList.remove('hidden');
+    loadPicoServiceStatus();
+  }
+}
+
+// ==========================================
+// PICO Business Suite 服务模式管理
+// ==========================================
+async function loadPicoServiceStatus() {
+  const badge = document.getElementById('pico-service-badge');
+  const pathSpan = document.getElementById('pico-ini-path');
+  const procSpan = document.getElementById('pico-proc-status');
+
+  if (badge) {
+    badge.textContent = '正在检测...';
+    badge.className = 'text-xs px-2.5 py-1 rounded-full font-bold border bg-slate-100 text-slate-600 border-slate-300';
+  }
+
+  try {
+    const res = await fetch('/api/config/pico-service-mode');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+
+    if (pathSpan) pathSpan.textContent = data.iniPath || '未检测到配置文件';
+
+    if (badge) {
+      if (data.runAsService) {
+        badge.textContent = '🟢 已开启服务模式 (runAsService=true)';
+        badge.className = 'text-xs px-2.5 py-1 rounded-full font-bold border bg-emerald-100 text-emerald-800 border-emerald-300';
+      } else {
+        badge.textContent = '🔴 未开启服务模式 (runAsService=false)';
+        badge.className = 'text-xs px-2.5 py-1 rounded-full font-bold border bg-rose-100 text-rose-800 border-rose-300';
+      }
+    }
+
+    if (procSpan) {
+      if (data.isProcessRunning) {
+        procSpan.innerHTML = `<span class="text-emerald-600 font-bold">🟢 正在运行 (PID: ${data.processId})</span>`;
+      } else {
+        procSpan.innerHTML = `<span class="text-slate-400">⚪ 未运行</span>`;
+      }
+    }
+  } catch (err) {
+    console.error('加载 PICO 服务模式失败:', err);
+    if (badge) {
+      badge.textContent = '⚠️ 检测异常';
+      badge.className = 'text-xs px-2.5 py-1 rounded-full font-bold border bg-amber-100 text-amber-800 border-amber-300';
+    }
+  }
+}
+
+async function setPicoServiceMode(enable) {
+  try {
+    const res = await fetch('/api/config/pico-service-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enable: enable, restartProcess: false })
+    });
+    const result = await res.json();
+    if (result.success) {
+      showToast('✓ ' + (enable ? '已成功开启服务模式！' : '已成功关闭服务模式！'));
+      loadPicoServiceStatus();
+    } else {
+      showToast('⚠️ 修改失败: ' + result.message);
+    }
+  } catch (err) {
+    showToast('⚠️ 网络错误: ' + err.message);
+  }
+}
+
+async function restartPicoService() {
+  showToast('正在重启 PICO 企业服务客户端...');
+  try {
+    const res = await fetch('/api/config/pico-service-mode/restart', { method: 'POST' });
+    const result = await res.json();
+    if (result.success) {
+      showToast('✓ ' + result.message);
+    } else {
+      showToast('⚠️ ' + result.message);
+    }
+    setTimeout(loadPicoServiceStatus, 1500);
+  } catch (err) {
+    showToast('⚠️ 重启请求失败: ' + err.message);
+  }
 }
 
 function renderConfigTables() {
+  // 1. 体验项目表格
   const appTbody = document.getElementById('app-config-tbody');
-  if (appTbody) {
-    appTbody.innerHTML = '';
-    projects.forEach(p => {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td><strong>${escapeHtml(p.icon || '🎮')} ${escapeHtml(p.name)}</strong></td>
-        <td><span class="status-pill">${p.type === 'vr_video' ? 'VR视频' : 'VR应用'}</span></td>
-        <td class="mono text-accent">${escapeHtml(p.packageName)}</td>
-        <td class="mono">${escapeHtml(p.durationMinutes || 15)}</td>
-        <td class="text-right">
-          <button type="button" class="btn btn--xs" data-action="openEditProjectForm" data-arg="${escapeHtml(p.id)}">编辑</button>
-          <button type="button" class="btn btn--xs btn--danger" data-action="deleteProject" data-arg="${escapeHtml(p.id)}">删除</button>
-        </td>
-      `;
-      appTbody.appendChild(tr);
-    });
-  }
+  appTbody.innerHTML = '';
+  projects.forEach(p => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="p-3 font-sans font-bold text-slate-800">
+        <span class="mr-1.5 text-base">${p.icon || '🎮'}</span>${p.name}
+      </td>
+      <td class="p-3 font-sans">
+        <span class="px-2 py-0.5 rounded text-[10px] ${p.type === 'vr_video' ? 'bg-indigo-50 text-indigo-700' : 'bg-emerald-50 text-emerald-700'}">
+          ${p.type === 'vr_video' ? 'VR视频' : 'VR应用'}
+        </span>
+      </td>
+      <td class="p-3 text-blue-600 font-mono">${p.packageName}</td>
+      <td class="p-3 font-sans">${p.durationMinutes}</td>
+      <td class="p-3 text-right font-sans space-x-2">
+        <button onclick="openEditProjectForm('${p.id}')" class="text-blue-600 hover:text-blue-800 text-xs font-semibold">编辑</button>
+        <button onclick="deleteProject('${p.id}')" class="text-rose-500 hover:text-rose-700 text-xs">删除</button>
+      </td>
+    `;
+    appTbody.appendChild(tr);
+  });
 
+  // 2. 头显 SN 绑定表格 (SN 为核心主键列)
   const headsetTbody = document.getElementById('headset-config-tbody');
-  if (headsetTbody) {
-    headsetTbody.innerHTML = '';
-    getFilteredDevices().forEach(dev => {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `
-        <td class="mono"><strong>${escapeHtml(dev.sn)}</strong></td>
-        <td class="mono">${dev.suiteNo ? escapeHtml(dev.suiteNo) : '--'}</td>
-        <td><strong>${escapeHtml(dev.alias || '未设置')}</strong></td>
-        <td>${escapeHtml(dev.model)}</td>
-        <td><span class="status-pill ${dev.online ? 'status-pill--online' : ''}">${dev.online ? '在线' : '离线'}</span></td>
-        <td class="text-right">
-          <button type="button" class="btn btn--xs" data-action="openAliasModal" data-arg="${escapeHtml(dev.sn)}" data-arg2="${escapeHtml(dev.alias || '')}">改别名</button>
-          <button type="button" class="btn btn--xs btn--danger" data-action="unbindHeadset" data-arg="${escapeHtml(dev.sn)}">解绑</button>
-        </td>
-      `;
-      headsetTbody.appendChild(tr);
-    });
-  }
+  headsetTbody.innerHTML = '';
+  const devList = Array.from(devices.values()).sort((a, b) => {
+    const numA = parseInt(a.alias.replace(/\D/g, '')) || 999;
+    const numB = parseInt(b.alias.replace(/\D/g, '')) || 999;
+    return numA - numB;
+  });
 
+  devList.forEach(dev => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="p-3 font-mono font-bold text-slate-900">
+        <div class="flex items-center gap-1.5">
+          <span>${dev.sn}</span>
+          <button onclick="copySn('${dev.sn}')" class="text-[10px] text-blue-600 hover:underline font-sans font-normal">复制</button>
+        </div>
+      </td>
+      <td class="p-3 font-mono text-slate-700">
+        ${dev.suiteNo ? `<span class="px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-bold">${dev.suiteNo}</span>` : '<span class="text-slate-400">--</span>'}
+      </td>
+      <td class="p-3 font-bold text-blue-600 font-sans">
+        <span class="px-2 py-0.5 rounded bg-blue-50 border border-blue-200">${dev.alias || '<span class="text-slate-400 font-normal">未设置别名</span>'}</span>
+      </td>
+      <td class="p-3 font-sans text-slate-500">${dev.model}</td>
+      <td class="p-3 font-sans ${dev.online ? 'text-emerald-600 font-semibold' : 'text-slate-400'}">
+        ${dev.online ? '● 在线就绪' : '○ 离线'}
+      </td>
+      <td class="p-3 text-right font-sans space-x-2">
+        <button onclick="openAliasModal('${dev.sn}', '${dev.alias || ''}')" class="text-blue-600 hover:underline font-semibold">修改别名</button>
+        <button onclick="unbindHeadset('${dev.sn}')" class="text-rose-500 hover:underline">解绑</button>
+      </td>
+    `;
+    headsetTbody.appendChild(tr);
+  });
+
+  // 3. UDP 机号对应游戏绑定表格
   renderUdpDeviceProjects();
 }
 
+// 渲染机器号 ➔ 默认游戏绑定表
 function renderUdpDeviceProjects() {
   const tbody = document.getElementById('udp-device-project-tbody');
   if (!tbody) return;
   tbody.innerHTML = '';
-  const list = Array.from(devices.values());
-  if (list.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="4" class="panel-sub" style="text-align: center;">暂无设备</td></tr>';
+
+  const devList = Array.from(devices.values()).sort((a, b) => {
+    const numA = parseInt(a.alias.replace(/\D/g, '')) || 999;
+    const numB = parseInt(b.alias.replace(/\D/g, '')) || 999;
+    return numA - numB;
+  });
+
+  if (devList.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="4" class="p-4 text-center text-slate-400 text-xs">
+          当前暂无设备在线，开机接入头戴或载入演示设备后可在此快捷配置机号对应体验游戏
+        </td>
+      </tr>
+    `;
     return;
   }
-  const defaults = systemConfig?.deviceDefaultProjects || {};
-  list.forEach(dev => {
-    const devKey = dev.alias || dev.sn;
-    const bound = defaults[dev.alias] || defaults[dev.sn] || '';
-    const opts = ['<option value="">-- 默认使用第1个项目 --</option>'].concat(
-      projects.map(p => `<option value="${escapeHtml(p.packageName)}" ${(bound === p.packageName || bound === p.id) ? 'selected' : ''}>${escapeHtml(p.icon || '🎮')} ${escapeHtml(p.name)}</option>`)
-    ).join('');
+
+  const defaultProjects = (systemConfig && systemConfig.deviceDefaultProjects) || {};
+
+  devList.forEach(dev => {
     const tr = document.createElement('tr');
+    const devKey = dev.alias || dev.sn;
+    const boundPkg = defaultProjects[dev.alias] || defaultProjects[dev.sn] || '';
+
+    let optionsHtml = `<option value="">-- 未设置默认 (使用系统第1项) --</option>`;
+    projects.forEach(p => {
+      const isSelected = (boundPkg === p.packageName || boundPkg === p.id);
+      optionsHtml += `<option value="${p.packageName}" ${isSelected ? 'selected' : ''}>${p.icon || '🎮'} ${p.name} (${p.packageName})</option>`;
+    });
+
     tr.innerHTML = `
-      <td><strong>${escapeHtml(dev.displayName)}</strong></td>
-      <td class="mono panel-sub">${escapeHtml(dev.sn)}</td>
-      <td><select data-change="saveDeviceProject" data-arg="${escapeHtml(devKey)}" style="inline-size: 100%;">${opts}</select></td>
-      <td class="text-right"><span class="status-pill ${dev.online ? 'status-pill--online' : ''}">${dev.online ? '在线' : '离线'}</span></td>
+      <td class="p-2.5 font-bold text-blue-600 font-sans">
+        <span class="px-2 py-0.5 rounded bg-blue-50 border border-blue-200">${dev.displayName}</span>
+      </td>
+      <td class="p-2.5 font-mono text-slate-600 text-[11px]">${dev.sn}</td>
+      <td class="p-2.5">
+        <select onchange="saveDeviceProject('${devKey}', this.value)" class="w-full max-w-sm px-2.5 py-1 text-xs border border-slate-300 rounded-lg bg-white font-sans focus:ring-2 focus:ring-indigo-400">
+          ${optionsHtml}
+        </select>
+      </td>
+      <td class="p-2.5 text-right font-sans ${dev.online ? 'text-emerald-600 font-semibold' : 'text-slate-400'}">
+        ${dev.online ? '● 在线就绪' : '○ 离线'}
+      </td>
     `;
     tbody.appendChild(tr);
   });
 }
 
 async function saveDeviceProject(deviceKey, packageOrProjectId) {
-  const res = await fetch('/api/config/device-project', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ deviceKey, packageOrProjectId })
-  });
-  if (res.ok) {
-    showToast(`已保存【${deviceKey}】默认绑定项目`);
-    await loadConfig();
+  try {
+    const res = await fetch('/api/config/device-project', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        deviceKey: deviceKey,
+        packageOrProjectId: packageOrProjectId
+      })
+    });
+    if (res.ok) {
+      playSound('success');
+      showToast(`已成功保存【${deviceKey}】默认绑定游戏`);
+      if (!systemConfig) systemConfig = {};
+      if (!systemConfig.deviceDefaultProjects) systemConfig.deviceDefaultProjects = {};
+      if (packageOrProjectId) {
+        systemConfig.deviceDefaultProjects[deviceKey] = packageOrProjectId;
+      } else {
+        delete systemConfig.deviceDefaultProjects[deviceKey];
+      }
+    } else {
+      showToast('保存失败', 'warning');
+    }
+  } catch (e) {
+    showToast('网络请求错误: ' + e.message, 'warning');
   }
 }
 
@@ -1560,89 +1443,193 @@ function updateTestUdpPreview() {
   const devNo = document.getElementById('test-udp-devno')?.value?.trim() || '022';
   const action = document.getElementById('test-udp-action')?.value || 'start';
   const pkg = document.getElementById('test-udp-pkg')?.value?.trim();
-  const payload = { deviceNo: devNo, action };
+
+  const payload = { deviceNo: devNo, action: action };
   if (pkg) payload.packageName = pkg;
-  safeSetText('test-udp-preview-json', `报文预览: ${JSON.stringify(payload)}`);
+
+  const preview = document.getElementById('test-udp-preview-json');
+  if (preview) {
+    preview.innerText = '报文预览: ' + JSON.stringify(payload);
+  }
 }
 
 function onTestUdpActionChange(action) {
-  const input = document.getElementById('test-udp-pkg');
-  if (input) input.disabled = action !== 'start';
+  const pkgInput = document.getElementById('test-udp-pkg');
+  if (pkgInput) {
+    if (action === 'start') {
+      pkgInput.disabled = false;
+      pkgInput.placeholder = '选填，留空则使用该机号绑定的游戏';
+    } else {
+      pkgInput.disabled = true;
+      pkgInput.placeholder = '当前动作无需包名';
+    }
+  }
   updateTestUdpPreview();
 }
 
 async function sendTestUdpMessage() {
-  const deviceNo = document.getElementById('test-udp-devno')?.value?.trim() || '022';
+  const devNo = document.getElementById('test-udp-devno')?.value?.trim() || '022';
   const action = document.getElementById('test-udp-action')?.value || 'start';
-  const packageName = document.getElementById('test-udp-pkg')?.value?.trim() || '';
-  const box = document.getElementById('test-udp-result-box');
-  if (box) {
-    box.classList.remove('hidden');
-    box.textContent = '正在发送 UDP 报文...';
+  const pkg = document.getElementById('test-udp-pkg')?.value?.trim() || '';
+
+  const msg = {
+    deviceNo: devNo,
+    action: action,
+    packageName: pkg
+  };
+
+  const resultBox = document.getElementById('test-udp-result-box');
+  if (resultBox) {
+    resultBox.classList.remove('hidden');
+    resultBox.innerText = `正在通过本地 UDP 端口向 127.0.0.1:8998 发送数据包...\n${JSON.stringify(msg, null, 2)}`;
   }
-  const res = await fetch('/api/config/test-udp', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ deviceNo, action, packageName })
-  });
-  const data = await res.json();
-  if (box) box.textContent = typeof data.ack === 'string' ? data.ack : JSON.stringify(data, null, 2);
-  showToast(data.success ? 'UDP 测试指令已回执' : 'UDP 测试失败', data.success ? '📡' : '⚠️');
+
+  try {
+    const res = await fetch('/api/config/test-udp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(msg)
+    });
+
+    const data = await res.json();
+    playSound(data.success ? 'success' : 'warning');
+    if (resultBox) {
+      resultBox.innerText = `[UDP 发送完成 & 接收到回执]\n` + (typeof data.ack === 'string' ? data.ack : JSON.stringify(data, null, 2));
+    }
+    showToast(`UDP 报文测试完成：${data.success ? '执行成功' : '失败'}`);
+  } catch (e) {
+    playSound('warning');
+    if (resultBox) {
+      resultBox.innerText = `[UDP 发送异常]: ${e.message}`;
+    }
+    showToast('UDP 测试异常: ' + e.message, 'warning');
+  }
 }
 
+function copySn(sn) {
+  navigator.clipboard.writeText(sn).then(() => {
+    showToast(`已复制序列号: ${sn}`);
+  });
+}
+
+// 手动录入新头盔绑定
+function openBindHeadsetForm() {
+  document.getElementById('headset-bind-form-container').classList.remove('hidden');
+  document.getElementById('form-bind-sn').value = '';
+  document.getElementById('form-bind-alias').value = '';
+}
+
+function closeBindHeadsetForm() {
+  document.getElementById('headset-bind-form-container').classList.add('hidden');
+}
+
+async function submitBindHeadsetForm() {
+  const sn = document.getElementById('form-bind-sn').value.trim().toUpperCase();
+  const alias = document.getElementById('form-bind-alias').value.trim();
+  const model = document.getElementById('form-bind-model').value;
+
+  if (!sn) {
+    alert('请填写头显唯一序列号 SN 码！');
+    return;
+  }
+
+  const res = await fetch('/api/config/bind-headset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sn, alias, model })
+  });
+
+  if (res.ok) {
+    closeBindHeadsetForm();
+    await loadDevices();
+    renderConfigTables();
+    showToast(`头显 SN【${sn}】已成功绑定为【${alias || sn}】！`);
+  }
+}
+
+async function unbindHeadset(sn) {
+  if (!confirm(`确认要解除头显 SN【${sn}】的机号绑定吗？`)) return;
+
+  const res = await fetch(`/api/config/bind-headset/${sn}`, {
+    method: 'DELETE'
+  });
+
+  if (res.ok) {
+    // 立即从前端设备集合中移除，无需等待刷新
+    devices.delete(sn);
+    selectedSns.delete(sn);
+    renderMatrix();
+    updateTopStats();
+    await loadDevices();
+    renderConfigTables();
+    showToast(`已解除头显 SN【${sn}】的绑定并移出列表`);
+  }
+}
+
+// 体验项目配置交互
 function openAddProjectForm() {
-  document.getElementById('project-form-container')?.classList.remove('hidden');
-  safeSetText('project-form-title', '添加新体验项目');
+  document.getElementById('project-form-container').classList.remove('hidden');
+  document.getElementById('project-form-title').innerText = '添加新体验项目';
   document.getElementById('form-proj-id').value = '';
   document.getElementById('form-proj-name').value = '';
-  document.getElementById('form-proj-package').value = '';
   document.getElementById('form-proj-type').value = 'vr_app';
+  document.getElementById('form-proj-package').value = '';
   document.getElementById('form-proj-duration').value = '15';
   document.getElementById('form-proj-icon').value = '🎮';
+  document.getElementById('form-proj-name').focus();
 }
 
 function openEditProjectForm(id) {
   const p = projects.find(x => x.id === id);
   if (!p) return;
-  document.getElementById('project-form-container')?.classList.remove('hidden');
-  safeSetText('project-form-title', `编辑项目：${p.name}`);
+  document.getElementById('project-form-container').classList.remove('hidden');
+  document.getElementById('project-form-title').innerText = `编辑体验项目 / 修改包名【${p.name}】`;
   document.getElementById('form-proj-id').value = p.id;
   document.getElementById('form-proj-name').value = p.name;
-  document.getElementById('form-proj-package').value = p.packageName;
   document.getElementById('form-proj-type').value = p.type || 'vr_app';
+  document.getElementById('form-proj-package').value = p.packageName;
   document.getElementById('form-proj-duration').value = p.durationMinutes || 15;
   document.getElementById('form-proj-icon').value = p.icon || '🎮';
+  document.getElementById('form-proj-package').focus();
 }
 
 function closeProjectForm() {
-  document.getElementById('project-form-container')?.classList.add('hidden');
+  document.getElementById('project-form-container').classList.add('hidden');
+  document.getElementById('form-proj-id').value = '';
 }
 
 async function submitProjectForm() {
   const id = document.getElementById('form-proj-id').value.trim();
   const name = document.getElementById('form-proj-name').value.trim();
-  const packageName = document.getElementById('form-proj-package').value.trim();
   const type = document.getElementById('form-proj-type').value;
-  const durationMinutes = parseInt(document.getElementById('form-proj-duration').value, 10) || 15;
+  const packageName = document.getElementById('form-proj-package').value.trim();
+  const durationMinutes = parseInt(document.getElementById('form-proj-duration').value) || 15;
   const icon = document.getElementById('form-proj-icon').value.trim() || '🎮';
-  if (!name || !packageName) return showToast('请填写项目名称和包名', '⚠️');
 
+  if (!name || !packageName) {
+    alert('请填写项目名称和 Android 包名！');
+    return;
+  }
+
+  const payload = { id: id || undefined, name, type, packageName, durationMinutes, icon };
   const res = await fetch('/api/config/projects', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: id || '', name, packageName, type, durationMinutes, icon })
+    body: JSON.stringify(payload)
   });
+
   if (res.ok) {
     closeProjectForm();
     await loadConfig();
+    renderProjects();
     renderConfigTables();
-    showToast(`项目【${name}】已保存`);
+    showToast(id ? `项目【${name}】包名与配置已更新！` : `项目【${name}】添加成功！`);
   }
 }
 
 async function deleteProject(id) {
-  if (!confirm('确认删除此体验项目吗？')) return;
-  const res = await fetch(`/api/config/projects/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!confirm('确认删除该体验项目配置吗？')) return;
+  const res = await fetch(`/api/config/projects/${id}`, { method: 'DELETE' });
   if (res.ok) {
     await loadConfig();
     renderConfigTables();
@@ -1650,255 +1637,148 @@ async function deleteProject(id) {
   }
 }
 
-function openBindHeadsetForm() {
-  document.getElementById('headset-bind-form-container')?.classList.remove('hidden');
-  document.getElementById('form-bind-sn').value = '';
-  document.getElementById('form-bind-alias').value = '';
-}
-
-function closeBindHeadsetForm() {
-  document.getElementById('headset-bind-form-container')?.classList.add('hidden');
-}
-
-async function submitBindHeadsetForm() {
-  const sn = document.getElementById('form-bind-sn').value.trim().toUpperCase();
-  const alias = document.getElementById('form-bind-alias').value.trim();
-  const model = document.getElementById('form-bind-model').value;
-  if (!sn) return showToast('请填写头显 SN 序列号', '⚠️');
-  const res = await fetch('/api/config/bind-headset', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sn, alias, model })
-  });
-  if (res.ok) {
-    closeBindHeadsetForm();
-    await loadDevices();
-    renderConfigTables();
-    showToast(`已绑定头显 ${sn}`);
-  }
-}
-
-async function unbindHeadset(sn) {
-  if (!confirm(`确认解绑头显【${sn}】吗？`)) return;
-  const res = await fetch(`/api/config/bind-headset/${encodeURIComponent(sn)}`, { method: 'DELETE' });
-  if (res.ok) {
-    devices.delete(sn);
-    selectedSns.delete(sn);
-    await loadDevices();
-    renderConfigTables();
-    showToast(`已解绑头显 ${sn}`);
-  }
-}
-
-// ======================== PICO 服务模式 ========================
-async function loadPicoServiceStatus() {
-  try {
-    const res = await fetch('/api/config/pico-service-mode');
-    if (!res.ok) return;
-    const data = await res.json();
-    safeSetText('pico-ini-path', data.iniPath || '未检测到');
-    const badge = document.getElementById('pico-service-badge');
-    if (badge) {
-      badge.textContent = data.runAsService ? '🟢 已开启服务模式' : '🔴 未开启服务模式';
-      badge.className = `status-pill ${data.runAsService ? 'status-pill--online' : 'status-pill--error'}`;
-    }
-    const proc = document.getElementById('pico-proc-status');
-    if (proc) {
-      proc.textContent = data.isProcessRunning ? `🟢 运行中 (PID ${data.processId})` : '⚪ 未运行';
-    }
-  } catch { }
-}
-
-async function setPicoServiceMode(enable) {
-  const res = await fetch('/api/config/pico-service-mode', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enable, restartProcess: false })
-  });
-  const data = await res.json();
-  showToast(data.message || '操作完成', data.success ? '✓' : '⚠️');
-  loadPicoServiceStatus();
-}
-
-async function restartPicoService() {
-  showToast('正在重启 PICO 官方套件...', '🔄');
-  const res = await fetch('/api/config/pico-service-mode/restart', { method: 'POST' });
-  const data = await res.json();
-  showToast(data.message || '已触发重启', data.success ? '✓' : '⚠️');
-  setTimeout(loadPicoServiceStatus, 1500);
-}
-
-// ======================== 弹窗：别名修改 ========================
-function openCurrentAliasModal() {
-  if (!currentMonitorSn) return showToast('请先选择一台头显', '⚠️');
-  const dev = devices.get(currentMonitorSn);
-  openAliasModal(currentMonitorSn, dev?.alias || '');
-}
-
-function openAliasModal(sn, alias) {
-  document.getElementById('alias-modal-sn').value = sn;
-  document.getElementById('alias-modal-input').value = alias || '';
-  document.getElementById('alias-modal')?.classList.remove('hidden');
-  document.getElementById('alias-modal-input')?.focus();
+// 别名编辑弹窗
+let currentEditingSn = null;
+function openAliasModal(sn, currentAlias) {
+  currentEditingSn = sn;
+  document.getElementById('alias-modal-sn').innerText = sn;
+  document.getElementById('alias-modal-input').value = currentAlias;
+  document.getElementById('alias-modal').classList.remove('hidden');
 }
 
 function closeAliasModal() {
-  document.getElementById('alias-modal')?.classList.add('hidden');
+  document.getElementById('alias-modal').classList.add('hidden');
+  currentEditingSn = null;
 }
 
 async function submitAliasModal() {
-  const sn = document.getElementById('alias-modal-sn').value.trim();
-  const alias = document.getElementById('alias-modal-input').value.trim();
+  const newAlias = document.getElementById('alias-modal-input').value.trim();
+  if (!currentEditingSn) return;
+
   const res = await fetch('/api/config/alias', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sn, alias })
+    body: JSON.stringify({ sn: currentEditingSn, alias: newAlias })
   });
+
   if (res.ok) {
     closeAliasModal();
-    await loadDevices();
+    const dev = devices.get(currentEditingSn);
+    if (dev) {
+      dev.alias = newAlias;
+    }
+    renderMatrix();
     renderConfigTables();
-    showToast(`已更新 ${sn} 别名为 ${alias || sn}`);
+    showToast(`设备编号已更新为【${newAlias || currentEditingSn}】并同步至头显`);
   }
 }
 
-// ======================== 弹窗：设备分组管理 ========================
-function openGroupManageModal() {
-  document.getElementById('group-modal')?.classList.remove('hidden');
-  renderGroupManageList();
-  cancelGroupForm();
+// ======================== 8. 辅助 UI 提示与仿真 Canvas ========================
+function showToast(msg, icon = '✓') {
+  const toast = document.getElementById('toast');
+  document.getElementById('toast-msg').innerText = msg;
+  document.getElementById('toast-icon').innerText = icon;
+  toast.classList.remove('translate-y-20', 'opacity-0');
+  clearTimeout(window._t);
+  window._t = setTimeout(() => {
+    toast.classList.add('translate-y-20', 'opacity-0');
+  }, 2300);
 }
 
-function closeGroupManageModal() {
-  document.getElementById('group-modal')?.classList.add('hidden');
-}
+function startCanvasSimulation() {
+  const canvas = document.getElementById('side-monitor-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  canvas.width = 480;
+  canvas.height = 270;
 
-function renderGroupManageList() {
-  const container = document.getElementById('group-list-container');
-  if (!container) return;
-  container.innerHTML = '';
-  const groups = systemConfig?.groups || [];
-  if (groups.length === 0) {
-    container.innerHTML = '<div class="panel-sub" style="text-align: center; padding: 1rem;">暂无分组，点击「新建分组」创建区域分组</div>';
-    return;
-  }
-  groups.forEach(g => {
-    const row = document.createElement('div');
-    row.className = 'diag-row';
-    row.innerHTML = `
-      <div>
-        <strong>🏷️ ${escapeHtml(g.name)}</strong>
-        <span class="panel-sub" style="margin-inline-start: 0.5rem;">包含 ${(g.deviceIdentifiers || []).length} 台设备</span>
-      </div>
-      <div class="flex-row">
-        <button type="button" class="btn btn--xs" data-action="editGroup" data-arg="${escapeHtml(g.id)}">编辑</button>
-        <button type="button" class="btn btn--xs btn--danger" data-action="deleteGroup" data-arg="${escapeHtml(g.id)}">删除</button>
-      </div>
-    `;
-    container.appendChild(row);
-  });
-}
+  let angle = 0;
 
-function populateGroupFormSelectors(selectedIds = [], selectedProj = '') {
-  const sel = document.getElementById('group-form-project');
-  if (sel) {
-    sel.innerHTML = '<option value="">-- 不预设 --</option>' +
-      projects.map(p => `<option value="${escapeHtml(p.id)}" ${p.id === selectedProj ? 'selected' : ''}>${escapeHtml(p.icon || '🎮')} ${escapeHtml(p.name)}</option>`).join('');
-  }
-  const grid = document.getElementById('group-device-selector-grid');
-  if (grid) {
-    grid.innerHTML = '';
-    const all = Array.from(devices.values());
-    if (all.length === 0) {
-      grid.innerHTML = '<span class="panel-sub">暂无已知头显</span>';
+  function renderFrame() {
+    angle += 0.03;
+    const w = canvas.width;
+    const h = canvas.height;
+
+    const dev = currentMonitorSn ? devices.get(currentMonitorSn) : null;
+
+    if (!dev || !dev.online) {
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = '#475569';
+      ctx.font = '13px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('头显离线或未接入，暂无画面流', w / 2, h / 2);
+      requestAnimationFrame(renderFrame);
       return;
     }
-    all.forEach(d => {
-      const checked = selectedIds.includes(d.sn) || selectedIds.includes(d.alias);
-      const lbl = document.createElement('label');
-      lbl.className = 'flex-row';
-      lbl.style.fontSize = '0.78rem';
-      lbl.style.cursor = 'pointer';
-      lbl.innerHTML = `<input type="checkbox" name="group-dev-cb" value="${escapeHtml(d.sn)}" ${checked ? 'checked' : ''}> <span>${escapeHtml(d.displayName)}</span>`;
-      grid.appendChild(lbl);
-    });
+
+    const isRunning = dev.currentApp && !isDesktopApp(dev.currentApp);
+
+    const grad = ctx.createLinearGradient(0, 0, w, h);
+    grad.addColorStop(0, '#020617');
+    grad.addColorStop(1, '#1e293b');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+
+    // 地平网格
+    ctx.strokeStyle = 'rgba(59, 130, 246, 0.2)';
+    ctx.lineWidth = 1;
+    const horizon = h * 0.55;
+    for (let x = -w; x <= w * 2; x += 40) {
+      ctx.beginPath();
+      ctx.moveTo(w / 2, horizon);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+    }
+
+    const cx = w / 2 + Math.sin(angle) * 50;
+    const cy = horizon - 20 + Math.cos(angle * 1.5) * 12;
+
+    if (isRunning) {
+      ctx.fillStyle = '#38bdf8';
+      ctx.beginPath();
+      ctx.arc(cx, cy, 24, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#0284c7';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, 44, 12, angle, 0, Math.PI * 2);
+      ctx.stroke();
+    } else {
+      ctx.strokeStyle = '#64748b';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(w / 2 - 50, horizon - 45, 100, 55);
+      ctx.fillStyle = '#94a3b8';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('PICO 系统桌面 (省流待命中)', w / 2, horizon - 15);
+    }
+
+    // 准星
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(w / 2, h / 2, 8, 0, Math.PI * 2);
+    ctx.stroke();
+
+    requestAnimationFrame(renderFrame);
   }
+
+  requestAnimationFrame(renderFrame);
 }
 
-function openNewGroupForm() {
-  document.getElementById('group-edit-form')?.classList.remove('hidden');
-  safeSetText('group-form-title', '新建设备分组');
-  document.getElementById('group-form-id').value = '';
-  document.getElementById('group-form-name').value = '';
-  populateGroupFormSelectors([], '');
-}
+// ======================== 9. 无线 ADB 局域网探针与设备控制 ========================
+let adbDevicesList = [];
 
-function editGroup(id) {
-  const g = (systemConfig?.groups || []).find(x => x.id === id);
-  if (!g) return;
-  document.getElementById('group-edit-form')?.classList.remove('hidden');
-  safeSetText('group-form-title', `编辑分组：${g.name}`);
-  document.getElementById('group-form-id').value = g.id;
-  document.getElementById('group-form-name').value = g.name;
-  populateGroupFormSelectors(g.deviceIdentifiers || [], g.defaultProjectId || '');
-}
-
-function cancelGroupForm() {
-  document.getElementById('group-edit-form')?.classList.add('hidden');
-}
-
-function toggleAllGroupDevices(checked) {
-  document.querySelectorAll('input[name="group-dev-cb"]').forEach(cb => { cb.checked = checked; });
-}
-
-async function saveGroupFromForm() {
-  const id = document.getElementById('group-form-id').value.trim();
-  const name = document.getElementById('group-form-name').value.trim();
-  const defaultProjectId = document.getElementById('group-form-project').value;
-  const deviceIdentifiers = Array.from(document.querySelectorAll('input[name="group-dev-cb"]:checked')).map(cb => cb.value);
-  if (!name) return showToast('请输入分组名称', '⚠️');
-
-  const res = await fetch('/api/config/groups', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: id || '', name, defaultProjectId, deviceIdentifiers })
-  });
-  if (res.ok) {
-    cancelGroupForm();
-    await loadConfig();
-    renderGroupManageList();
-    showToast(`分组【${name}】已保存`);
-  }
-}
-
-async function deleteGroup(id) {
-  if (!confirm('确认删除该分组吗？')) return;
-  const res = await fetch(`/api/config/groups/${encodeURIComponent(id)}`, { method: 'DELETE' });
-  if (res.ok) {
-    if (currentActiveGroupId === id) currentActiveGroupId = 'all';
-    await loadConfig();
-    renderGroupManageList();
-    showToast('分组已删除');
-  }
-}
-
-// ======================== 弹窗：无线 ADB 与批量部署 ========================
 function openAdbModal() {
-  document.getElementById('adb-modal')?.classList.remove('hidden');
+  const modal = document.getElementById('adb-modal');
+  if (modal) modal.classList.remove('hidden');
+  switchAdbTab('devices');
   loadAdbDevices();
 }
 
 function closeAdbModal() {
-  document.getElementById('adb-modal')?.classList.add('hidden');
-}
-
-function switchAdbTab(tab) {
-  const isDev = tab === 'devices';
-  document.getElementById('adb-tab-btn-devices').className = `tab-btn${isDev ? ' tab-btn--active' : ''}`;
-  document.getElementById('adb-tab-btn-deploy').className = `tab-btn${!isDev ? ' tab-btn--active' : ''}`;
-  document.getElementById('adb-tab-content-devices').classList.toggle('hidden', !isDev);
-  document.getElementById('adb-tab-content-deploy').classList.toggle('hidden', isDev);
-  if (!isDev) renderDeployTargetCheckboxes();
+  document.getElementById('adb-modal').classList.add('hidden');
 }
 
 async function loadAdbDevices() {
@@ -1910,33 +1790,57 @@ async function loadAdbDevices() {
       renderAdbTable();
       renderDeployTargetCheckboxes();
     }
-  } catch { }
+  } catch (e) {
+    console.error('loadAdbDevices error:', e);
+  }
 }
 
 function renderAdbTable() {
   const tbody = document.getElementById('adb-devices-tbody');
+  const badge = document.getElementById('adb-devices-count-badge');
   if (!tbody) return;
-  const connected = adbDevicesList.filter(d => d.isConnected).length;
-  safeSetText('adb-devices-count-badge', `${connected} 台已连接 (共 ${adbDevicesList.length} 台)`);
-  tbody.innerHTML = '';
 
+  const connectedCount = adbDevicesList.filter(d => d.isConnected).length;
+  if (badge) badge.innerText = `${connectedCount} 台已连接 (共 ${adbDevicesList.length} 台)`;
+
+  tbody.innerHTML = '';
   if (adbDevicesList.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="6" class="panel-sub" style="text-align: center; padding: 1.5rem;">暂无已连接的 ADB 设备，请点击「全网段自动扫描」或手动输入 IP 连接</td></tr>';
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="6" class="p-6 text-center text-slate-400">
+          暂无已连接的 ADB 设备。点击上方「全网段自动扫描并连接头显」或输入头戴 IP 建立无线连接
+        </td>
+      </tr>
+    `;
     return;
   }
 
   adbDevicesList.forEach(dev => {
     const tr = document.createElement('tr');
+    tr.className = 'hover:bg-slate-50 transition';
     tr.innerHTML = `
-      <td class="mono"><strong>${dev.isWireless ? '📶' : '🔌'} ${escapeHtml(dev.target)}</strong></td>
-      <td class="mono text-accent">${dev.sn ? escapeHtml(dev.sn) : '--'}</td>
-      <td>${escapeHtml(dev.model || 'PICO VR')}</td>
-      <td class="mono">${dev.battery >= 0 ? `${dev.battery}%` : '--'}</td>
-      <td><span class="status-pill ${dev.isConnected ? 'status-pill--online' : ''}">${dev.isConnected ? '已就绪' : escapeHtml(dev.status)}</span></td>
-      <td class="text-right">
-        <button type="button" class="btn btn--xs" data-action="readAdbSn" data-arg="${escapeHtml(dev.target)}">读SN</button>
-        <button type="button" class="btn btn--xs btn--amber" data-action="rebootAdb" data-arg="${escapeHtml(dev.target)}">重启</button>
-        <button type="button" class="btn btn--xs btn--danger" data-action="disconnectAdb" data-arg="${escapeHtml(dev.target)}">断开</button>
+      <td class="p-3 font-mono font-bold text-slate-800">
+        <div class="flex items-center gap-1.5">
+          <span class="text-emerald-600">${dev.isWireless ? '📶' : '🔌'}</span>
+          <span>${dev.target}</span>
+        </div>
+      </td>
+      <td class="p-3 font-mono font-bold ${dev.sn ? 'text-indigo-600' : 'text-slate-400'}">
+        ${dev.sn || '<span class="text-[11px] font-normal text-slate-400">待读取</span>'}
+      </td>
+      <td class="p-3 font-sans text-slate-600">${dev.model || 'PICO VR'}</td>
+      <td class="p-3 font-mono ${dev.battery >= 0 ? (dev.battery <= 20 ? 'text-rose-600 font-bold' : 'text-emerald-600') : 'text-slate-400'}">
+        ${dev.battery >= 0 ? `${dev.battery}%` : '--'}
+      </td>
+      <td class="p-3 font-sans">
+        <span class="px-2 py-0.5 rounded text-[10px] font-semibold ${dev.isConnected ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-slate-100 text-slate-500'}">
+          ${dev.isConnected ? '● 已就绪' : dev.status}
+        </span>
+      </td>
+      <td class="p-3 text-right font-sans space-x-2">
+        <button onclick="readAdbSn('${dev.target}')" class="text-blue-600 hover:underline">读取SN</button>
+        <button onclick="rebootAdb('${dev.target}')" class="text-amber-600 hover:underline">重启</button>
+        <button onclick="disconnectAdb('${dev.target}')" class="text-rose-500 hover:underline">断开</button>
       </td>
     `;
     tbody.appendChild(tr);
@@ -1945,95 +1849,218 @@ function renderAdbTable() {
 
 async function startAdbScan() {
   const btn = document.getElementById('adb-scan-btn');
-  const prog = document.getElementById('adb-scan-progress');
-  if (btn) btn.disabled = true;
-  if (prog) prog.classList.remove('hidden');
-  safeSetText('adb-scan-text', '扫描探测中...');
+  const icon = document.getElementById('adb-scan-icon');
+  const text = document.getElementById('adb-scan-text');
+  const progress = document.getElementById('adb-scan-progress');
+
+  btn.disabled = true;
+  icon.classList.add('animate-spin');
+  text.innerText = '正在全网段并发探测头戴中...';
+  if (progress) progress.classList.remove('hidden');
+
   try {
-    const res = await fetch('/api/adb/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    showToast('正在高速扫描局域网所有活跃网段 (TCP 5555)...', '🔍');
+    const res = await fetch('/api/adb/scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
     if (res.ok) {
       const data = await res.json();
       adbDevicesList = data.devices || [];
       renderAdbTable();
       renderDeployTargetCheckboxes();
-      showToast(`扫描完成，发现 ${data.discoveredCount || 0} 台设备`);
+      showToast(`扫描完毕，共发现并连接 ${data.discoveredCount || 0} 台头戴设备！`, '✓');
     }
+  } catch (e) {
+    showToast(`扫描出错: ${e.message}`, '⚠️');
   } finally {
-    if (btn) btn.disabled = false;
-    if (prog) prog.classList.add('hidden');
-    safeSetText('adb-scan-text', '全网段自动扫描并连接头显');
+    btn.disabled = false;
+    icon.classList.remove('animate-spin');
+    text.innerText = '全网段自动扫描并连接头显';
+    if (progress) progress.classList.add('hidden');
   }
 }
 
 async function connectManualAdb() {
-  const ip = document.getElementById('adb-manual-ip').value.trim();
-  const port = parseInt(document.getElementById('adb-manual-port').value, 10) || 5555;
-  if (!ip) return showToast('请输入设备 IP', '⚠️');
-  const res = await fetch('/api/adb/connect', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ip, port })
-  });
-  const data = await res.json();
-  showToast(data.message || (data.success ? '连接成功' : '连接失败'), data.success ? '✓' : '⚠️');
-  if (data.success) {
-    document.getElementById('adb-manual-ip').value = '';
-    await loadAdbDevices();
+  const ipInput = document.getElementById('adb-manual-ip');
+  const portInput = document.getElementById('adb-manual-port');
+  const ip = ipInput.value.trim();
+  const port = parseInt(portInput.value) || 5555;
+
+  if (!ip) {
+    alert('请输入头显局域网 IP 地址！');
+    return;
+  }
+
+  showToast(`正在尝试连接 ${ip}:${port}...`, '🔄');
+  try {
+    const res = await fetch('/api/adb/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip, port })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(data.message || '连接成功！', '✓');
+      ipInput.value = '';
+      await loadAdbDevices();
+    } else {
+      showToast(data.message || '连接失败，请确认设备已开机并在同一局域网', '⚠️');
+    }
+  } catch (e) {
+    showToast(`连接异常: ${e.message}`, '⚠️');
   }
 }
 
 async function disconnectAdb(target) {
-  await fetch('/api/adb/disconnect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target }) });
-  showToast(`已断开 ${target}`);
-  await loadAdbDevices();
+  if (!confirm(`确认断开与 ${target} 的无线 ADB 连接吗？`)) return;
+  try {
+    await fetch('/api/adb/disconnect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target })
+    });
+    showToast(`已断开 ${target}`);
+    await loadAdbDevices();
+  } catch (e) { }
 }
 
 async function readAdbSn(target) {
-  const res = await fetch('/api/adb/read-sn', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target }) });
-  const data = await res.json();
-  showToast(data.success ? `读取到 SN: ${data.sn}` : '读取 SN 失败', data.success ? '✓' : '⚠️');
-  await loadAdbDevices();
+  showToast(`正在通过 ADB 读取 ${target} 硬件 SN...`, '🔍');
+  try {
+    const res = await fetch('/api/adb/read-sn', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`读取成功 SN: ${data.sn}`, '✓');
+      await loadAdbDevices();
+    } else {
+      showToast('读取 SN 失败，可能权限不足或未完全开机', '⚠️');
+    }
+  } catch (e) {
+    showToast(`读取异常: ${e.message}`, '⚠️');
+  }
 }
 
 async function rebootAdb(target) {
-  if (!confirm(`确认重启 ${target} 吗？`)) return;
-  await fetch('/api/adb/reboot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target }) });
-  showToast(`已向 ${target} 发送重启指令`);
+  if (!confirm(`确认要远程重启头显 ${target} 吗？`)) return;
+  try {
+    await fetch('/api/adb/reboot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target })
+    });
+    showToast(`已向 ${target} 下发重启指令！`, '✓');
+  } catch (e) { }
 }
 
 async function syncAdbDevicesToConfig() {
-  const res = await fetch('/api/adb/sync-to-config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-  const data = await res.json();
-  showToast(`已同步 ${data.syncedCount || 0} 台新设备`);
-  await loadDevices();
+  showToast('正在将已识别的 ADB 设备同步至机号列表...', '🔄');
+  try {
+    const res = await fetch('/api/adb/sync-to-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`已成功同步 ${data.syncedCount || 0} 台新设备到机位列表！`, '✓');
+      await loadDevices();
+      renderConfigTables();
+    }
+  } catch (e) {
+    showToast(`同步失败: ${e.message}`, '⚠️');
+  }
+}
+
+function switchAdbTab(tab) {
+  try {
+    const btnDevices = document.getElementById('adb-tab-btn-devices');
+    const btnDeploy = document.getElementById('adb-tab-btn-deploy');
+    const contentDevices = document.getElementById('adb-tab-content-devices');
+    const contentDeploy = document.getElementById('adb-tab-content-deploy');
+
+    if (!btnDevices || !btnDeploy || !contentDevices || !contentDeploy) {
+      console.warn('ADB tab elements not found', { btnDevices, btnDeploy, contentDevices, contentDeploy });
+      return;
+    }
+
+    if (tab === 'devices') {
+      btnDevices.className = 'py-3 text-emerald-600 border-b-2 border-emerald-600 flex items-center gap-1.5 transition font-bold';
+      btnDeploy.className = 'py-3 text-slate-500 hover:text-slate-700 border-b-2 border-transparent flex items-center gap-1.5 transition font-bold';
+      contentDevices.classList.remove('hidden');
+      contentDeploy.classList.add('hidden');
+    } else {
+      btnDeploy.className = 'py-3 text-emerald-600 border-b-2 border-emerald-600 flex items-center gap-1.5 transition font-bold';
+      btnDevices.className = 'py-3 text-slate-500 hover:text-slate-700 border-b-2 border-transparent flex items-center gap-1.5 transition font-bold';
+      contentDevices.classList.add('hidden');
+      contentDeploy.classList.remove('hidden');
+      renderDeployTargetCheckboxes();
+    }
+  } catch (err) {
+    console.error('switchAdbTab error:', err);
+  }
 }
 
 function renderDeployTargetCheckboxes() {
-  const container = document.getElementById('deploy-devices-checkboxes');
-  if (!container) return;
-  const connected = adbDevicesList.filter(d => d && d.isConnected);
-  container.innerHTML = '';
-  if (connected.length === 0) {
-    container.innerHTML = '<span class="panel-sub">暂无已连接 ADB 设备，请先扫描或手动连接</span>';
-    safeSetText('deploy-selected-count', '0 台可用');
-    return;
+  try {
+    const container = document.getElementById('deploy-devices-checkboxes');
+    const countBadge = document.getElementById('deploy-selected-count');
+    if (!container) return;
+
+    const list = Array.isArray(adbDevicesList) ? adbDevicesList : [];
+    const connected = list.filter(d => d && (d.isConnected || d.status === 'device'));
+    container.innerHTML = '';
+
+    if (connected.length === 0) {
+      container.innerHTML = `
+        <div class="flex items-center gap-2 p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs w-full">
+          <span>⚠️ 当前暂无就绪状态的无线 ADB 头显。</span>
+          <button type="button" onclick="switchAdbTab('devices'); startAdbScan();" class="text-blue-600 underline font-semibold ml-auto hover:text-blue-800">
+            👉 切回探针页自动扫描
+          </button>
+        </div>
+      `;
+      if (countBadge) countBadge.innerText = '0 台可用';
+      return;
+    }
+
+    connected.forEach(dev => {
+      if (!dev || !dev.target) return;
+      const label = document.createElement('label');
+      label.className = 'flex items-center gap-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 px-2.5 py-1.5 rounded-lg cursor-pointer transition select-none';
+      let displayName = dev.target;
+      if (dev.sn && typeof devices !== 'undefined' && devices.has(dev.sn)) {
+        const dObj = devices.get(dev.sn);
+        if (dObj && dObj.displayName) {
+          displayName = `${dObj.displayName} (${dev.target})`;
+        }
+      }
+      label.innerHTML = `
+        <input type="checkbox" name="deploy-device-target" value="${dev.target}" checked class="rounded text-emerald-600 accent-emerald-600" onchange="updateDeploySelectedCount()" />
+        <span class="font-mono text-slate-700 font-bold">${displayName}</span>
+      `;
+      container.appendChild(label);
+    });
+
+    updateDeploySelectedCount();
+  } catch (err) {
+    console.error('renderDeployTargetCheckboxes error:', err);
   }
-  connected.forEach(dev => {
-    const lbl = document.createElement('label');
-    lbl.className = 'btn btn--xs';
-    lbl.innerHTML = `<input type="checkbox" name="deploy-device-target" value="${escapeHtml(dev.target)}" checked data-change="updateDeploySelectedCount"> <span class="mono">${escapeHtml(dev.target)}</span>`;
-    container.appendChild(lbl);
-  });
-  updateDeploySelectedCount();
 }
 
 function updateDeploySelectedCount() {
-  const count = document.querySelectorAll('input[name="deploy-device-target"]:checked').length;
-  safeSetText('deploy-selected-count', `已选 ${count} 台`);
+  const checks = document.querySelectorAll('input[name="deploy-device-target"]:checked');
+  const countBadge = document.getElementById('deploy-selected-count');
+  if (countBadge) countBadge.innerText = `已选 ${checks.length} 台设备`;
 }
 
 function toggleSelectAllDeployDevices(select) {
-  document.querySelectorAll('input[name="deploy-device-target"]').forEach(cb => { cb.checked = select; });
+  document.querySelectorAll('input[name="deploy-device-target"]').forEach(cb => cb.checked = select);
   updateDeploySelectedCount();
 }
 
@@ -2046,159 +2073,413 @@ function appendDeployLog(msg, isErr = false) {
   const logs = document.getElementById('deploy-console-logs');
   if (!box || !logs) return;
   box.classList.remove('hidden');
+  const time = new Date().toLocaleTimeString();
   const line = document.createElement('div');
-  line.style.color = isErr ? '#fb7185' : '#34d399';
-  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  line.className = isErr ? 'text-rose-400' : 'text-emerald-300';
+  line.innerText = `[${time}] ${msg}`;
   logs.appendChild(line);
-  deployLogLines++;
-  safeSetText('deploy-log-counter', `${deployLogLines} 条`);
-  logs.scrollTop = logs.scrollHeight;
-}
-
-function clearDeployLog() {
-  const logs = document.getElementById('deploy-console-logs');
-  if (logs) logs.innerHTML = '';
-  deployLogLines = 0;
-  safeSetText('deploy-log-counter', '0 条');
-}
-
-function copyDeployLog() {
-  const logs = document.getElementById('deploy-console-logs');
-  if (!logs || !logs.textContent.trim()) return;
-  navigator.clipboard.writeText(logs.textContent).then(() => showToast('已复制部署日志', '📋'));
-}
-
-function toggleDeployLogHeight() {
-  const logs = document.getElementById('deploy-console-logs');
-  if (!logs) return;
-  isDeployLogExpanded = !isDeployLogExpanded;
-  logs.classList.toggle('console-box--expanded', isDeployLogExpanded);
-  safeSetText('btn-deploy-log-toggle', isDeployLogExpanded ? '⛶ 还原' : '⛶ 展开');
+  box.scrollTop = box.scrollHeight;
 }
 
 async function executeDeployInstallApk() {
-  const localPath = document.getElementById('deploy-apk-localpath').value.trim();
-  const file = document.getElementById('deploy-apk-file').files?.[0];
-  if (!localPath && !file) return showToast('请提供本地 APK 路径或选择文件', '⚠️');
-  const targets = getSelectedDeployTargets();
-  if (targets.length === 0) return showToast('请至少勾选一台目标设备', '⚠️');
+  const fileInput = document.getElementById('deploy-apk-file');
+  const localPathInput = document.getElementById('deploy-apk-localpath');
+  const localPath = localPathInput ? localPathInput.value.trim() : '';
+  const hasFile = fileInput.files && fileInput.files[0];
 
-  if (localPath) {
-    appendDeployLog(`开始本地直推安装 APK: ${localPath} -> ${targets.join(', ')}`);
-    const res = await fetch('/api/adb/local-install', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ localPath, targets })
-    });
-    const data = await res.json();
-    (data.results || []).forEach(r => appendDeployLog(`[${r.target}] ${r.message}`, !r.success));
-    if (!data.success) appendDeployLog(data.message || '安装失败', true);
+  if (!hasFile && !localPath) {
+    alert('请选择要上传的 .apk 文件，或输入服务器本地 APK 绝对路径！');
+    return;
+  }
+  const targets = getSelectedDeployTargets();
+  if (targets.length === 0) {
+    alert('请至少勾选一台目标头戴设备！');
     return;
   }
 
-  appendDeployLog(`开始上传并安装 APK: ${file.name}`);
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('targets', targets.join(','));
-  const res = await fetch('/api/adb/upload-install', { method: 'POST', body: fd });
-  const data = await res.json();
-  (data.results || []).forEach(r => appendDeployLog(`[${r.target}] ${r.message}`, !r.success));
-  if (!data.success) appendDeployLog(data.message || '安装失败', true);
-}
-
-async function executeDeployPushFile() {
-  const localPath = document.getElementById('deploy-push-localpath').value.trim();
-  const file = document.getElementById('deploy-push-file').files?.[0];
-  if (!localPath && !file) return showToast('请提供本地路径或选择上传文件', '⚠️');
-  const targets = getSelectedDeployTargets();
-  if (targets.length === 0) return showToast('请至少勾选一台目标设备', '⚠️');
-  const remotePath = document.getElementById('deploy-push-remote').value.trim() || '/sdcard/Download/';
-  const overwrite = document.getElementById('deploy-push-overwrite')?.checked ?? true;
-  const flatten = document.getElementById('deploy-push-flatten')?.checked ?? false;
-
   if (localPath) {
-    appendDeployLog(`开始本地推送: ${localPath} -> ${remotePath}`);
-    const res = await fetch('/api/adb/local-push', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ localPath, remotePath, targets, overwrite, flatten })
-    });
-    const data = await res.json();
-    (data.results || []).forEach(r => appendDeployLog(`[${r.target}] ${r.message}`, !r.success));
-    if (!data.success) appendDeployLog(data.message || '推送失败', true);
+    // 方案 A：服务器本地路径极速直推（免上传·秒装）
+    const fileName = localPath.replace(/\\/g, '/').split('/').pop();
+    if (!confirm(`确认要将服务器本地安装包【${fileName}】免上传直接安装到 ${targets.length} 台设备吗？\n（路径: ${localPath}）`)) return;
+
+    appendDeployLog(`🚀 [本地直推] 开始批量安装 APK: ${fileName}，目标: ${targets.join(', ')}`);
+    showToast(`正在免上传直接安装【${fileName}】...`, '📲');
+
+    try {
+      const res = await fetch('/api/adb/local-install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ localPath, targets })
+      });
+      const data = await res.json();
+      if (data.success && data.results) {
+        data.results.forEach(r => {
+          appendDeployLog(`设备 [${r.target}]: ${r.message}`, !r.success);
+        });
+        showToast('APK 批量本地直发安装执行完毕！', '✓');
+      } else {
+        appendDeployLog(`❌ 安装失败: ${data.message || '未知错误'}`, true);
+        showToast(`安装出错: ${data.message}`, '⚠️');
+      }
+    } catch (e) {
+      appendDeployLog(`❌ 网络或服务端错误: ${e.message}`, true);
+    }
     return;
   }
 
-  appendDeployLog(`开始上传并推送: ${file.name} -> ${remotePath}`);
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('remotePath', remotePath);
-  fd.append('targets', targets.join(','));
-  fd.append('overwrite', String(overwrite));
-  fd.append('flatten', String(flatten));
-  const res = await fetch('/api/adb/upload-push', { method: 'POST', body: fd });
-  const data = await res.json();
-  (data.results || []).forEach(r => appendDeployLog(`[${r.target}] ${r.message}`, !r.success));
-  if (!data.success) appendDeployLog(data.message || '推送失败', true);
-}
+  // 方案 B：传统网页文件上传推流安装
+  const file = fileInput.files[0];
+  if (!confirm(`确认要将安装包【${file.name}】(${(file.size / 1024 / 1024).toFixed(1)}MB) 批量安装到 ${targets.length} 台设备吗？`)) return;
 
-async function executeDeployCreateFolder() {
-  const remotePath = document.getElementById('deploy-push-remote').value.trim();
-  const targets = getSelectedDeployTargets();
-  if (!remotePath || targets.length === 0) return showToast('请填写远程目录并选择设备', '⚠️');
-  const res = await fetch('/api/adb/mkdir', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ remotePath, targets })
-  });
-  const data = await res.json();
-  (data.results || []).forEach(r => appendDeployLog(`[${r.target}] ${r.message}`, !r.success));
+  appendDeployLog(`🚀 开始批量上传安装 APK: ${file.name}，目标设备: ${targets.join(', ')}`);
+  showToast(`正在上传并推流安装【${file.name}】...`, '📲');
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('targets', targets.join(','));
+
+  try {
+    const res = await fetch('/api/adb/upload-install', {
+      method: 'POST',
+      body: formData
+    });
+    const data = await res.json();
+    if (data.success && data.results) {
+      data.results.forEach(r => {
+        appendDeployLog(`设备 [${r.target}]: ${r.message}`, !r.success);
+      });
+      showToast('APK 批量安装执行完毕！', '✓');
+    } else {
+      appendDeployLog(`❌ 安装失败: ${data.message || '未知错误'}`, true);
+      showToast(`安装出错: ${data.message}`, '⚠️');
+    }
+  } catch (e) {
+    appendDeployLog(`❌ 网络或服务端错误: ${e.message}`, true);
+  }
 }
 
 async function queryDeployPackages() {
   const targets = getSelectedDeployTargets();
-  const target = targets[0] || adbDevicesList.find(d => d.isConnected)?.target;
-  if (!target) return showToast('请先连接设备', '⚠️');
-  const res = await fetch(`/api/adb/packages?target=${encodeURIComponent(target)}`);
-  const data = await res.json();
-  const dd = document.getElementById('deploy-pkg-dropdown');
-  if (data.success && data.packages?.length && dd) {
-    dd.innerHTML = `<option value="">-- 选择已安装的第三方应用 (${data.packages.length} 个) --</option>` +
-      data.packages.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
-    dd.classList.remove('hidden');
-    showToast(`已读取 ${data.packages.length} 个应用`);
-  } else {
-    showToast('未读取到第三方应用', '⚠️');
+  const target = targets.length > 0 ? targets[0] : (adbDevicesList.find(d => d.isConnected)?.target);
+  if (!target) {
+    alert('请先连接头戴设备！');
+    return;
+  }
+
+  showToast(`正在从设备 ${target} 读取已安装第三方包名...`, '🔍');
+  try {
+    const res = await fetch(`/api/adb/packages?target=${encodeURIComponent(target)}`);
+    const data = await res.json();
+    if (data.success && data.packages && data.packages.length > 0) {
+      const dropdown = document.getElementById('deploy-pkg-dropdown');
+      dropdown.innerHTML = `<option value="">-- 选择已检索到的第三方包名 (${data.packages.length} 个) --</option>`;
+      data.packages.forEach(pkg => {
+        const opt = document.createElement('option');
+        opt.value = pkg;
+        opt.innerText = pkg;
+        dropdown.appendChild(opt);
+      });
+      dropdown.classList.remove('hidden');
+      showToast(`已成功读取到 ${data.packages.length} 个第三方应用！`, '✓');
+    } else {
+      showToast('未检索到第三方应用或读取失败', '⚠️');
+    }
+  } catch (e) {
+    showToast(`读取异常: ${e.message}`, '⚠️');
   }
 }
 
 async function executeDeployUninstallApp() {
-  const packageName = document.getElementById('deploy-uninstall-pkg').value.trim();
+  const pkg = document.getElementById('deploy-uninstall-pkg').value.trim();
+  if (!pkg) {
+    alert('请输入或选择要卸载的包名！');
+    return;
+  }
   const targets = getSelectedDeployTargets();
-  if (!packageName || targets.length === 0) return showToast('请输入包名并选择目标设备', '⚠️');
-  if (!confirm(`确认从 ${targets.length} 台设备卸载【${packageName}】吗？`)) return;
-  const res = await fetch('/api/adb/uninstall', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ packageName, targets })
-  });
-  const data = await res.json();
-  (data.results || []).forEach(r => appendDeployLog(`[${r.target}] ${r.message}`, !r.success));
+  if (targets.length === 0) {
+    alert('请至少勾选一台目标头戴设备！');
+    return;
+  }
+
+  if (!confirm(`确认要从 ${targets.length} 台设备上批量卸载应用【${pkg}】吗？此操作将清除该游戏应用及数据！`)) return;
+
+  appendDeployLog(`🗑 开始批量卸载应用: ${pkg}，目标设备: ${targets.join(', ')}`);
+  showToast(`正在向 ${targets.length} 台设备发送卸载指令...`, '🗑');
+
+  try {
+    const res = await fetch('/api/adb/uninstall', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ packageName: pkg, targets })
+    });
+    const data = await res.json();
+    if (data.success && data.results) {
+      data.results.forEach(r => {
+        appendDeployLog(`设备 [${r.target}]: ${r.message}`, !r.success);
+      });
+      showToast('批量卸载执行完毕！', '✓');
+    } else {
+      appendDeployLog(`❌ 卸载失败: ${data.message || '未知错误'}`, true);
+      showToast(`卸载出错: ${data.message}`, '⚠️');
+    }
+  } catch (e) {
+    appendDeployLog(`❌ 卸载异常: ${e.message}`, true);
+  }
 }
 
-// ======================== 弹窗：版本信息 ========================
-async function openOtaModal() {
-  document.getElementById('ota-modal')?.classList.remove('hidden');
+async function executeDeployCreateFolder() {
+  const remotePath = document.getElementById('deploy-push-remote').value.trim();
+  if (!remotePath) {
+    alert('请输入要在头显创建的远程目录绝对路径（如 /sdcard/Download/MyFolder/）！');
+    return;
+  }
+  const targets = getSelectedDeployTargets();
+  if (targets.length === 0) {
+    alert('请至少勾选一台目标头戴设备！');
+    return;
+  }
+
+  if (!confirm(`确认要在 ${targets.length} 台设备上创建远程目录【${remotePath}】吗？`)) return;
+
+  appendDeployLog(`📁 正在批量创建远程目录: ${remotePath}，目标: ${targets.join(', ')}`);
+  showToast('正在创建远程目录...', '📁');
+
+  try {
+    const res = await fetch('/api/adb/mkdir', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ remotePath, targets })
+    });
+    const data = await res.json();
+    if (data.success && data.results) {
+      data.results.forEach(r => {
+        appendDeployLog(`设备 [${r.target}]: ${r.message}`, !r.success);
+      });
+      showToast('远程目录创建执行完毕！', '✓');
+    } else {
+      appendDeployLog(`❌ 创建目录失败: ${data.message || '未知错误'}`, true);
+      showToast(`创建失败: ${data.message}`, '⚠️');
+    }
+  } catch (e) {
+    appendDeployLog(`❌ 网络或服务端错误: ${e.message}`, true);
+  }
+}
+
+async function executeDeployPushFile() {
+  const fileInput = document.getElementById('deploy-push-file');
+  const localPathInput = document.getElementById('deploy-push-localpath');
+  const localPath = localPathInput ? localPathInput.value.trim() : '';
+  const hasFile = fileInput.files && fileInput.files[0];
+
+  if (!hasFile && !localPath) {
+    alert('请选择要推送的文件/ZIP，或输入服务器本地文件/文件夹绝对路径！');
+    return;
+  }
+  const remotePath = document.getElementById('deploy-push-remote').value.trim() || '/sdcard/Download/';
+  const targets = getSelectedDeployTargets();
+  if (targets.length === 0) {
+    alert('请至少勾选一台目标头戴设备！');
+    return;
+  }
+  const overwrite = document.getElementById('deploy-push-overwrite')?.checked ?? true;
+
+  if (localPath) {
+    // 方案 A：服务器本地路径极速直推（免上传·无文件大小限制）
+    const itemName = localPath.replace(/\\/g, '/').split('/').filter(Boolean).pop();
+    if (!confirm(`确认要将服务器本地【${itemName}】免上传直接推送到 ${targets.length} 台设备的【${remotePath}】存储目录吗？${overwrite ? ' (遇同名仅替换同名文件)' : ''}\n（路径: ${localPath}）`)) return;
+
+    appendDeployLog(`📤 [本地直推] 开始批量推送: ${itemName} -> ${remotePath}，目标: ${targets.join(', ')}${overwrite ? ' [同名覆盖]' : ''}`);
+    showToast(`正在直接推流【${itemName}】...`, '📤');
+
+    try {
+      const res = await fetch('/api/adb/local-push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ localPath, remotePath, targets, overwrite })
+      });
+      const data = await res.json();
+      if (data.success && data.results) {
+        data.results.forEach(r => {
+          appendDeployLog(`设备 [${r.target}]: ${r.message}`, !r.success);
+        });
+        showToast('批量本地推送执行完毕！', '✓');
+      } else {
+        appendDeployLog(`❌ 推送失败: ${data.message || '未知错误'}`, true);
+        showToast(`推送出错: ${data.message}`, '⚠️');
+      }
+    } catch (e) {
+      appendDeployLog(`❌ 推送异常: ${e.message}`, true);
+    }
+    return;
+  }
+
+  // 方案 B：传统网页文件上传推送
+  const file = fileInput.files[0];
+  if (!confirm(`确认要将【${file.name}】(${(file.size / 1024 / 1024).toFixed(1)}MB) 批量推送到 ${targets.length} 台设备的【${remotePath}】存储目录吗？${overwrite ? ' (遇同名仅替换同名文件)' : ''}`)) return;
+
+  appendDeployLog(`📤 开始批量上传推送文件: ${file.name} -> ${remotePath}，目标: ${targets.join(', ')}${overwrite ? ' [同名覆盖]' : ''}`);
+  showToast(`正在向 ${targets.length} 台设备推送文件...`, '📤');
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('remotePath', remotePath);
+  formData.append('targets', targets.join(','));
+  formData.append('overwrite', overwrite);
+
+  try {
+    const res = await fetch('/api/adb/upload-push', {
+      method: 'POST',
+      body: formData
+    });
+    const data = await res.json();
+    if (data.success && data.results) {
+      data.results.forEach(r => {
+        appendDeployLog(`设备 [${r.target}]: ${r.message}`, !r.success);
+      });
+      showToast('批量文件推送执行完毕！', '✓');
+    } else {
+      appendDeployLog(`❌ 推送失败: ${data.message || '未知错误'}`, true);
+      showToast(`推送出错: ${data.message}`, '⚠️');
+    }
+  } catch (e) {
+    appendDeployLog(`❌ 推送异常: ${e.message}`, true);
+  }
+}
+
+// ======================== 10. 远程 OTA 升级交互 ========================
+let selectedOtaFile = null;
+
+function openOtaModal() {
+  document.getElementById('ota-modal').classList.remove('hidden');
+  loadOtaVersion();
+}
+
+function closeOtaModal() {
+  document.getElementById('ota-modal').classList.add('hidden');
+}
+
+async function loadOtaVersion() {
   try {
     const res = await fetch('/api/ota/version');
     if (res.ok) {
       const info = await res.json();
-      safeSetText('ota-current-ver', info.version || 'v2.0.0');
-      safeSetText('ota-build-time', `构建时间: ${info.buildTime || '2026-11-20'} · ${info.channel || 'Rust 原生一体版'}`);
+      document.getElementById('ota-current-ver').innerText = info.version || 'v1.2.0';
+      document.getElementById('ota-build-time').innerText = `构建时间: ${info.buildTime || '2026-11-13'}`;
     }
-  } catch { }
+  } catch (e) { }
 }
 
-function closeOtaModal() {
-  document.getElementById('ota-modal')?.classList.add('hidden');
+function handleOtaFileSelected(input) {
+  if (input.files && input.files[0]) {
+    selectedOtaFile = input.files[0];
+    document.getElementById('ota-file-label').innerText = `已选更新包: ${selectedOtaFile.name} (${(selectedOtaFile.size / 1024 / 1024).toFixed(2)} MB)`;
+    document.getElementById('ota-upload-btn').disabled = false;
+  }
+}
+
+function startOtaUpload() {
+  if (!selectedOtaFile) {
+    alert('请先选择 OTA 升级包 (.zip)！');
+    return;
+  }
+
+  if (!confirm(`确认要执行远程 OTA 升级吗？升级包【${selectedOtaFile.name}】将被热解压应用并自动重启系统。`)) return;
+
+  const progressBox = document.getElementById('ota-progress-box');
+  const progressBar = document.getElementById('ota-progress-bar');
+  const progressPct = document.getElementById('ota-progress-pct');
+  const progressTitle = document.getElementById('ota-progress-title');
+  const uploadBtn = document.getElementById('ota-upload-btn');
+
+  progressBox.classList.remove('hidden');
+  uploadBtn.disabled = true;
+
+  const formData = new FormData();
+  formData.append('file', selectedOtaFile);
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', apiUrl('/api/ota/upload'));
+
+  xhr.upload.onprogress = (e) => {
+    if (e.lengthComputable) {
+      const pct = Math.round((e.loaded / e.total) * 100);
+      progressBar.style.width = `${pct}%`;
+      progressPct.innerText = `${pct}%`;
+    }
+  };
+
+  xhr.onload = () => {
+    if (xhr.status === 200) {
+      progressTitle.innerText = 'OTA 升级包应用成功！正在热重启服务...';
+      pollOtaReboot();
+    } else {
+      alert(`OTA 升级失败: ${xhr.responseText}`);
+      uploadBtn.disabled = false;
+    }
+  };
+
+  xhr.onerror = () => {
+    // 某些极端情况下服务退出时可能立即触发 error，也当作重启中处理
+    pollOtaReboot();
+  };
+
+  xhr.send(formData);
+}
+
+async function startOtaFromUrl() {
+  const url = document.getElementById('ota-url-input').value.trim();
+  if (!url) {
+    alert('请输入远程 OTA 下载链接！');
+    return;
+  }
+
+  if (!confirm(`确认从远程链接【${url}】下载并执行 OTA 升级吗？`)) return;
+
+  const progressBox = document.getElementById('ota-progress-box');
+  const progressTitle = document.getElementById('ota-progress-title');
+  progressBox.classList.remove('hidden');
+  progressTitle.innerText = '正在远程下载 OTA 升级包并应用，请稍候...';
+
+  try {
+    const res = await fetch('/api/ota/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    if (res.ok) {
+      pollOtaReboot();
+    } else {
+      const err = await res.json();
+      alert(`OTA 失败: ${err.message || '下载出错'}`);
+    }
+  } catch (e) {
+    pollOtaReboot();
+  }
+}
+
+function pollOtaReboot() {
+  const progressTitle = document.getElementById('ota-progress-title');
+  const progressHint = document.getElementById('ota-progress-hint');
+  let countdown = 6;
+
+  const timer = setInterval(async () => {
+    countdown--;
+    if (progressTitle) progressTitle.innerText = `系统正在热重载重启生效... (${countdown}s)`;
+    if (countdown <= 0) {
+      clearInterval(timer);
+      if (progressHint) progressHint.innerText = '服务已重启，正在重新连接并刷新页面...';
+      // 循环重连探测
+      for (let i = 0; i < 20; i++) {
+        try {
+          const res = await fetch('/api/ota/version');
+          if (res.ok) {
+            window.location.reload();
+            return;
+          }
+        } catch (e) { }
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      window.location.reload();
+    }
+  }, 1000);
 }
