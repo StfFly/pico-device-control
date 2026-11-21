@@ -20,12 +20,16 @@
         "resizable": true,
         "fullscreen": false,
         "decorations": true,
-        "transparent": false,
+        "transparent": true,
         "center": true
       }
     ],
     "security": {
-      "csp": "default-src 'self' http://*:* ws://*:*; img-src 'self' http://*:* blob: data:; style-src 'self'; style-src-attr 'unsafe-inline'; script-src 'self'; connect-src 'self' http://*:* ws://*:*"
+      "csp": null
+    },
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "tooltip": "PICO VR 门店统一管理控制中心"
     }
   },
   "bundle": {

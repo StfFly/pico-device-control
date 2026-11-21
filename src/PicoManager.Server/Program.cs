@@ -15,12 +15,13 @@ ConsoleLifetimeHelper.Register();
 string baseDir = AppDomain.CurrentDomain.BaseDirectory;
 string contentRoot = Directory.GetCurrentDirectory();
 
-// 智能解析 wwwroot 静态资源目录 (统一指向 src-tauri/ui，兼容独立部署包)
+// 智能解析 wwwroot 静态资源目录 (兼容从根目录运行、开发调试、或是独立部署包)
 string[] candidateRoots = [
-    Path.Combine(contentRoot, "src-tauri", "ui"),
-    Path.Combine(baseDir, "wwwroot"),
     Path.Combine(contentRoot, "wwwroot"),
-    Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "src-tauri", "ui")),
+    Path.Combine(baseDir, "wwwroot"),
+    Path.Combine(contentRoot, "src", "PicoManager.Server", "wwwroot"),
+    Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "wwwroot")),
+    Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "..", "src", "PicoManager.Server", "wwwroot")),
 ];
 
 string? resolvedWebRoot = candidateRoots.FirstOrDefault(Directory.Exists);
@@ -85,8 +86,7 @@ builder.Services.AddSingleton<ScreenMonitorService>();
 builder.Services.AddSingleton<PicoDeviceManager>();
 builder.Services.AddSingleton<AdbService>();
 builder.Services.AddSingleton<OtaService>();
-builder.Services.AddSingleton<PicoSdkService>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<PicoSdkService>());
+builder.Services.AddHostedService<PicoSdkService>();
 builder.Services.AddHostedService<UdpCommandService>();
 
 builder.Services.AddCors(options =>
